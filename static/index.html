@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Observatory</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+
+  <!-- ── Header ─────────────────────────────────────────────── -->
+  <header class="app-header">
+    <div class="header-left">
+      <span class="header-logo">◉</span>
+      <span class="header-title">Agent Observatory</span>
+    </div>
+    <div class="header-right">
+      <span class="header-session-id" id="header-session-id"></span>
+      <div class="live-indicator" id="live-indicator">
+        <span class="live-dot"></span>
+        <span class="live-label">Connecting…</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Main ───────────────────────────────────────────────── -->
+  <main class="app-main">
+
+    <!-- Sessions sidebar -->
+    <aside class="panel panel-sessions">
+      <div class="panel-header">
+        <span class="panel-title">Sessions</span>
+        <span class="pill" id="session-count">0</span>
+      </div>
+      <div class="session-list" id="session-list">
+        <div class="empty-state" id="sessions-empty">
+          <div class="empty-icon">◌</div>
+          <p>No sessions yet</p>
+          <p class="hint">Run an agent to start observing</p>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Visualization panel -->
+    <section class="panel panel-main">
+
+      <!-- Tab bar -->
+      <div class="tab-bar">
+        <nav class="view-tabs">
+          <button class="view-tab active" data-view="tree">Call Tree</button>
+          <button class="view-tab" data-view="timeline">Timeline</button>
+        </nav>
+        <div class="tab-actions">
+          <button class="btn-icon danger" id="btn-clear-session" title="Delete session" hidden>⊗</button>
+        </div>
+      </div>
+
+      <!-- Stats bar -->
+      <div class="stats-bar" id="stats-bar">
+        <div class="stat-item">
+          <span class="stat-value" id="stat-total">—</span>
+          <span class="stat-label">Agents</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item">
+          <span class="stat-value yellow" id="stat-running">—</span>
+          <span class="stat-label">Running</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item">
+          <span class="stat-value green" id="stat-completed">—</span>
+          <span class="stat-label">Completed</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item">
+          <span class="stat-value purple" id="stat-failed">—</span>
+          <span class="stat-label">Interrupted</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item">
+          <span class="stat-value accent" id="stat-walltime">—</span>
+          <span class="stat-label">Wall time</span>
+        </div>
+      </div>
+
+      <!-- Visualizations -->
+      <div class="viz-container">
+        <div class="viz-view" id="tree-view">
+          <div class="empty-state large" id="tree-empty">
+            <div class="empty-icon large">◉</div>
+            <p>Select a session to view its agent call graph</p>
+          </div>
+        </div>
+        <div class="viz-view hidden" id="timeline-view">
+          <div class="empty-state large" id="timeline-empty">
+            <div class="empty-icon large">◉</div>
+            <p>Select a session to view its timeline</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Detail panel -->
+    <aside class="panel panel-detail" id="panel-detail">
+      <div class="detail-empty" id="detail-empty">
+        <div class="empty-icon">◌</div>
+        <p>Click a node to inspect it</p>
+      </div>
+
+      <div class="detail-content hidden" id="detail-content">
+
+        <!-- Agent header -->
+        <div class="detail-hero">
+          <div class="detail-status-stripe" id="detail-status-stripe"></div>
+          <div class="detail-hero-body">
+            <div class="detail-agent-icon-row">
+              <div class="detail-agent-icon-box" id="detail-icon-box">
+                <span id="detail-agent-icon"></span>
+              </div>
+              <div class="detail-agent-name-block">
+                <div class="detail-agent-name" id="detail-agent-type"></div>
+                <div class="detail-description" id="detail-description-hero"></div>
+              </div>
+            </div>
+            <div class="detail-badges">
+              <span class="badge" id="detail-status-badge"></span>
+              <span class="badge badge-neutral" id="detail-duration-badge"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Timing & context -->
+        <div class="detail-card">
+          <div class="detail-card-title">Timing</div>
+          <div class="meta-grid">
+            <span class="meta-key">Started</span>
+            <span class="meta-val" id="detail-started"></span>
+            <span class="meta-key">Completed</span>
+            <span class="meta-val" id="detail-completed"></span>
+            <span class="meta-key">Duration</span>
+            <span class="meta-val accent" id="detail-duration-val"></span>
+          </div>
+        </div>
+
+        <!-- Hierarchy -->
+        <div class="detail-card">
+          <div class="detail-card-title">Hierarchy</div>
+          <div class="meta-grid">
+            <span class="meta-key">Parent</span>
+            <span class="meta-val" id="detail-parent"></span>
+            <span class="meta-key">Depth</span>
+            <span class="meta-val" id="detail-depth"></span>
+          </div>
+          <div class="children-list" id="detail-children"></div>
+        </div>
+
+        <!-- Prompt -->
+        <div class="detail-card expandable" id="card-prompt">
+          <div class="detail-card-title clickable" data-target="prompt-body">
+            <span>Prompt</span>
+            <div class="card-title-right">
+              <span class="word-count" id="prompt-wc"></span>
+              <button class="btn-copy" data-target="detail-prompt">Copy</button>
+              <span class="expand-icon">▾</span>
+            </div>
+          </div>
+          <pre class="code-block" id="detail-prompt"></pre>
+        </div>
+
+        <!-- Response -->
+        <div class="detail-card expandable" id="card-response">
+          <div class="detail-card-title clickable" data-target="response-body">
+            <span>Response</span>
+            <div class="card-title-right">
+              <span class="word-count" id="response-wc"></span>
+              <button class="btn-copy" data-target="detail-response">Copy</button>
+              <span class="expand-icon">▾</span>
+            </div>
+          </div>
+          <pre class="code-block" id="detail-response"></pre>
+        </div>
+
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- Tooltip -->
+  <div class="node-tooltip hidden" id="node-tooltip"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

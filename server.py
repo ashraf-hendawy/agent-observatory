@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+"""
+Agent Observatory — Backend Server
+
+Receives Claude Code hook events and serves the real-time web UI.
+Stores traces in SQLite for persistence across restarts.
+
+Usage:
+    python server.py [--port 8765] [--host 0.0.0.0]
+"""
+
+import argparse
+import asyncio
+import json
+import random
+import sqlite3
+import time
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Funny name generator (used when subagent_type is not specified)
+# ---------------------------------------------------------------------------
+
+_ADJECTIVES = [
+    "Jazzy", "Turbo", "Cosmic", "Sneaky", "Fluffy", "Grumpy", "Bouncy",
+    "Zesty", "Crispy", "Wobbly", "Spicy", "Sleepy", "Chaotic", "Mighty",
+    "Tiny", "Sassy", "Funky", "Chonky", "Wiggly", "Dramatic",
+]
+
+_ANIMALS = [
+    "Raccoon", "Penguin", "Narwhal", "Capybara", "Platypus", "Axolotl",
+    "Quokka", "Pangolin", "Meerkat", "Blobfish", "Tardigrade", "Wombat",
+    "Ocelot", "Tapir", "Manatee", "Numbat", "Kinkajou", "Binturong",
+    "Fossa", "Saiga",
+]
+
+
+def funny_name() -> str:
+    return f"{random.choice(_ADJECTIVES)} {random.choice(_ANIMALS)}"
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+DB_PATH = Path(__file__).parent / "observatory.db"
+STATIC_DIR = Path(__file__).parent / "static"
+
+# ---------------------------------------------------------------------------
+# In-memory state (lost on restart — traces survive in SQLite)
+# ---------------------------------------------------------------------------
+
+# Per-session call stacks: session_id -> [trace_id, ...]
+# Used to infer parent-child relationships from sequential hook events.
+session_stacks: dict[str, list[str]] = {}
+
+# SSE client queues
+sse_clients: list[asyncio.Queue] = []
+
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+
+def get_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def init_db() -> None:
+    with get_db() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id          TEXT PRIMARY KEY,
+                started_at  REAL NOT NULL,
+                last_seen   REAL NOT NULL,
+                trace_count INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS traces (
+                id           TEXT PRIMARY KEY,
+                session_id   TEXT NOT NULL REFERENCES sessions(id),
+                parent_id    TEXT,
+                agent_type   TEXT NOT NULL DEFAULT 'unknown',
+                description  TEXT NOT NULL DEFAULT '',
+                prompt       TEXT NOT NULL DEFAULT '',
+                response     TEXT,
+                status       TEXT NOT NULL DEFAULT 'running',
+                started_at   REAL NOT NULL,
+                completed_at REAL,
+                duration_ms  INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_traces_session ON traces(session_id);
+
+            -- Mark any traces left in 'running' state from a previous server
+            -- session as 'interrupted' so the UI doesn't show stuck spinners.
+            UPDATE traces SET status = 'interrupted'
+            WHERE status = 'running';
+        """)
+
+
+# ---------------------------------------------------------------------------
+# SSE broadcasting
+# ---------------------------------------------------------------------------
+
+async def broadcast(event: dict) -> None:
+    """Push an event to all connected SSE clients."""
+    dead: list[asyncio.Queue] = []
+    for q in sse_clients:
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            dead.append(q)
+    for q in dead:
+        try:
+            sse_clients.remove(q)
+        except ValueError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# App lifecycle
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="Agent Observatory", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return (STATIC_DIR / "index.html").read_text()
+
+
+@app.post("/events")
+async def receive_event(request: Request):
+    """
+    Called by hook.py on every PreToolUse / PostToolUse event for the Agent tool.
+
+    Expected payload:
+        {
+            "event":         "pre" | "post",
+            "session_id":    str,
+            "tool_name":     str,
+            "tool_input":    { subagent_type, prompt, description, ... },
+            "tool_response": str | null,
+            "timestamp":     float   # unix seconds
+        }
+    """
+    try:
+        data: dict = await request.json()
+    except Exception:
+        return {"ok": False, "error": "invalid JSON"}
+
+    event_type: str = data.get("event", "")
+    session_id: str = data.get("session_id") or "unknown"
+    tool_input: dict = data.get("tool_input") or {}
+    tool_response: Optional[str] = data.get("tool_response")
+    ts: float = data.get("timestamp") or time.time()
+
+    with get_db() as conn:
+        # Upsert the session row
+        conn.execute(
+            """
+            INSERT INTO sessions (id, started_at, last_seen, trace_count)
+            VALUES (?, ?, ?, 0)
+            ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen
+            """,
+            (session_id, ts, ts),
+        )
+
+        if event_type == "pre":
+            # ----------------------------------------------------------------
+            # A new agent is being spawned — create a trace record.
+            # ----------------------------------------------------------------
+            trace_id = str(uuid.uuid4())
+            stack = session_stacks.setdefault(session_id, [])
+            parent_id = stack[-1] if stack else None
+            stack.append(trace_id)
+
+            agent_type = (
+                tool_input.get("subagent_type")
+                or tool_input.get("agent_type")
+                or ""
+            )
+            if not agent_type or agent_type in ("unknown", "general-purpose"):
+                agent_type = funny_name()
+            description = tool_input.get("description") or ""
+            prompt = (tool_input.get("prompt") or "")[:12_000]  # cap at 12 KB
+
+            conn.execute(
+                """
+                INSERT INTO traces
+                    (id, session_id, parent_id, agent_type, description,
+                     prompt, status, started_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+                """,
+                (trace_id, session_id, parent_id, agent_type, description, prompt, ts),
+            )
+            conn.execute(
+                "UPDATE sessions SET trace_count = trace_count + 1 WHERE id = ?",
+                (session_id,),
+            )
+
+            await broadcast(
+                {
+                    "type": "trace_started",
+                    "trace_id": trace_id,
+                    "session_id": session_id,
+                    "parent_id": parent_id,
+                    "agent_type": agent_type,
+                    "description": description,
+                    "started_at": ts,
+                }
+            )
+
+        elif event_type == "post":
+            # ----------------------------------------------------------------
+            # An agent has completed — close its trace record.
+            # ----------------------------------------------------------------
+            stack = session_stacks.get(session_id, [])
+            if not stack:
+                return {"ok": True, "note": "no pending trace to close"}
+
+            trace_id = stack.pop()
+            row = conn.execute(
+                "SELECT started_at FROM traces WHERE id = ?", (trace_id,)
+            ).fetchone()
+            duration_ms = int((ts - row["started_at"]) * 1000) if row else 0
+
+            # Normalise response: could be string or list of content blocks
+            response_text = _normalise_response(tool_response)[:12_000]
+
+            conn.execute(
+                """
+                UPDATE traces
+                SET response     = ?,
+                    status       = 'completed',
+                    completed_at = ?,
+                    duration_ms  = ?
+                WHERE id = ?
+                """,
+                (response_text, ts, duration_ms, trace_id),
+            )
+
+            await broadcast(
+                {
+                    "type": "trace_completed",
+                    "trace_id": trace_id,
+                    "session_id": session_id,
+                    "duration_ms": duration_ms,
+                    "completed_at": ts,
+                }
+            )
+
+    return {"ok": True}
+
+
+@app.get("/sessions")
+async def list_sessions():
+    """Return the 50 most recently active sessions with aggregate stats."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                s.id,
+                s.started_at,
+                s.last_seen,
+                s.trace_count,
+                COUNT(CASE WHEN t.status = 'running'     THEN 1 END) AS running_count,
+                COUNT(CASE WHEN t.status = 'interrupted' THEN 1 END) AS failed_count,
+                COALESCE(SUM(t.duration_ms), 0)                      AS total_agent_ms,
+                COALESCE(MAX(t.completed_at) - MIN(t.started_at), 0) AS wall_time_s
+            FROM sessions s
+            LEFT JOIN traces t ON t.session_id = s.id
+            GROUP BY s.id
+            ORDER BY s.last_seen DESC
+            LIMIT 50
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/sessions/{session_id}/traces")
+async def get_traces(session_id: str):
+    """Return all traces for a session, ordered by start time."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, parent_id, agent_type, description, prompt, response,
+                   status, started_at, completed_at, duration_ms
+            FROM traces
+            WHERE session_id = ?
+            ORDER BY started_at ASC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/stream")
+async def sse_stream(request: Request):
+    """Server-Sent Events endpoint for real-time updates."""
+    queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+    sse_clients.append(queue)
+
+    async def generate():
+        try:
+            yield 'data: {"type":"connected"}\n\n'
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=25.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield 'data: {"type":"ping"}\n\n'
+        finally:
+            try:
+                sse_clients.remove(queue)
+            except ValueError:
+                pass
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Remove a session and all its traces."""
+    with get_db() as conn:
+        conn.execute("DELETE FROM traces WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    if session_id in session_stacks:
+        del session_stacks[session_id]
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _normalise_response(value) -> str:
+    """Convert various tool_response shapes to a plain string."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for block in value:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(block.get("text") or json.dumps(block))
+        return "\n".join(parts)
+    return str(value)
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="Agent Observatory server")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8765)
+    args = parser.parse_args()
+
+    uvicorn.run(
+        "server:app",
+        host=args.host,
+        port=args.port,
+        reload=False,
+        log_level="info",
+    )
