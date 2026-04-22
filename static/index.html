@@ -50,6 +50,9 @@
         <nav class="view-tabs">
           <button class="view-tab active" data-view="tree">Call Tree</button>
           <button class="view-tab" data-view="timeline">Timeline</button>
+          <button class="view-tab" data-view="flow">Flow</button>
+          <button class="view-tab" data-view="logs">Logs</button>
+          <button class="view-tab" data-view="chat">Chat</button>
         </nav>
         <div class="tab-actions">
           <button class="btn-icon danger" id="btn-clear-session" title="Delete session" hidden>⊗</button>
@@ -82,6 +85,16 @@
           <span class="stat-value accent" id="stat-walltime">—</span>
           <span class="stat-label">Wall time</span>
         </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item">
+          <span class="stat-value" id="stat-tokens">—</span>
+          <span class="stat-label">~Tokens</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item">
+          <span class="stat-value green" id="stat-cost">—</span>
+          <span class="stat-label">~Cost (USD)</span>
+        </div>
       </div>
 
       <!-- Visualizations -->
@@ -96,6 +109,31 @@
           <div class="empty-state large" id="timeline-empty">
             <div class="empty-icon large">◉</div>
             <p>Select a session to view its timeline</p>
+          </div>
+        </div>
+
+        <div class="viz-view hidden" id="flow-view">
+          <div class="empty-state large" id="flow-empty">
+            <div class="empty-icon large">◉</div>
+            <p>Select a session to view its agent flow graph</p>
+          </div>
+        </div>
+
+        <div class="viz-view hidden" id="logs-view">
+          <div class="empty-state large" id="logs-empty">
+            <div class="empty-icon large">◉</div>
+            <p>Select a session to view its logs</p>
+          </div>
+          <div class="log-terminal hidden" id="log-terminal">
+            <div class="log-terminal-bar">
+              <span class="log-terminal-title">▸ AGENT SESSION LOG</span>
+              <div class="log-terminal-controls">
+                <label class="log-autoscroll-label">
+                  <input type="checkbox" id="log-autoscroll" checked /> autoscroll
+                </label>
+              </div>
+            </div>
+            <div class="log-entries" id="log-entries"></div>
           </div>
         </div>
       </div>
@@ -127,6 +165,9 @@
               <span class="badge" id="detail-status-badge"></span>
               <span class="badge badge-neutral" id="detail-duration-badge"></span>
             </div>
+            <button class="btn-continue" id="btn-continue" title="Copy a follow-up prompt to clipboard">
+              ↗ Continue in Claude Code
+            </button>
           </div>
         </div>
 
@@ -140,6 +181,12 @@
             <span class="meta-val" id="detail-completed"></span>
             <span class="meta-key">Duration</span>
             <span class="meta-val accent" id="detail-duration-val"></span>
+            <span class="meta-key">~Input tok</span>
+            <span class="meta-val" id="detail-input-tokens"></span>
+            <span class="meta-key">~Output tok</span>
+            <span class="meta-val" id="detail-output-tokens"></span>
+            <span class="meta-key">~Cost</span>
+            <span class="meta-val" id="detail-cost"></span>
           </div>
         </div>
 
@@ -185,6 +232,37 @@
     </aside>
 
   </main>
+
+        <div class="viz-view hidden" id="chat-view">
+          <div class="chat-layout">
+
+            <!-- Board list sidebar -->
+            <aside class="chat-sidebar">
+              <div class="chat-sidebar-header">Boards</div>
+              <div class="board-list" id="board-list">
+                <div class="empty-state" id="boards-empty">
+                  <div class="empty-icon">◌</div>
+                  <p>No boards yet</p>
+                </div>
+              </div>
+            </aside>
+
+            <!-- Message thread -->
+            <div class="chat-main">
+              <div class="chat-thread-header" id="chat-thread-header" hidden>
+                <span class="chat-board-id" id="chat-board-id"></span>
+                <span class="chat-msg-count" id="chat-msg-count"></span>
+              </div>
+              <div class="chat-thread" id="chat-thread">
+                <div class="empty-state large" id="chat-empty">
+                  <div class="empty-icon large">◌</div>
+                  <p>Select a board to view the conversation</p>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
 
   <!-- Tooltip -->
   <div class="node-tooltip hidden" id="node-tooltip"></div>

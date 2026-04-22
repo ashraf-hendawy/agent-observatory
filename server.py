@@ -38,6 +38,25 @@ _ANIMALS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Pricing (Claude Sonnet 4.6 — adjust if using a different model)
+# Token counts are estimated from text length (4 chars ≈ 1 token).
+# ---------------------------------------------------------------------------
+
+INPUT_PRICE_PER_M  = 3.00   # USD per 1M input tokens
+OUTPUT_PRICE_PER_M = 15.00  # USD per 1M output tokens
+CHARS_PER_TOKEN    = 4.0    # rough average for English text
+
+
+def estimate_cost(prompt: str, response: str) -> tuple[int, int, float]:
+    """Return (input_tokens, output_tokens, cost_usd) — all estimates."""
+    input_tokens  = int(len(prompt)   / CHARS_PER_TOKEN)
+    output_tokens = int(len(response) / CHARS_PER_TOKEN)
+    cost = (input_tokens  * INPUT_PRICE_PER_M  / 1_000_000 +
+            output_tokens * OUTPUT_PRICE_PER_M / 1_000_000)
+    return input_tokens, output_tokens, round(cost, 6)
+
+
 def funny_name() -> str:
     return f"{random.choice(_ADJECTIVES)} {random.choice(_ANIMALS)}"
 
@@ -93,19 +112,40 @@ def init_db() -> None:
                 description  TEXT NOT NULL DEFAULT '',
                 prompt       TEXT NOT NULL DEFAULT '',
                 response     TEXT,
-                status       TEXT NOT NULL DEFAULT 'running',
-                started_at   REAL NOT NULL,
-                completed_at REAL,
-                duration_ms  INTEGER
+                status        TEXT NOT NULL DEFAULT 'running',
+                started_at    REAL NOT NULL,
+                completed_at  REAL,
+                duration_ms   INTEGER,
+                input_tokens  INTEGER,
+                output_tokens INTEGER,
+                cost_usd      REAL
             );
 
             CREATE INDEX IF NOT EXISTS idx_traces_session ON traces(session_id);
+
+            -- Agent-to-agent message board
+            CREATE TABLE IF NOT EXISTS board_messages (
+                id         TEXT PRIMARY KEY,
+                board_id   TEXT NOT NULL,
+                agent_name TEXT NOT NULL DEFAULT 'unknown',
+                content    TEXT NOT NULL DEFAULT '',
+                reply_to   TEXT,
+                timestamp  REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_board ON board_messages(board_id);
 
             -- Mark any traces left in 'running' state from a previous server
             -- session as 'interrupted' so the UI doesn't show stuck spinners.
             UPDATE traces SET status = 'interrupted'
             WHERE status = 'running';
         """)
+        # Migrate older DBs that lack the cost columns
+        for col, typ in [("input_tokens", "INTEGER"), ("output_tokens", "INTEGER"), ("cost_usd", "REAL")]:
+            try:
+                conn.execute(f"ALTER TABLE traces ADD COLUMN {col} {typ}")
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -196,15 +236,16 @@ async def receive_event(request: Request):
             parent_id = stack[-1] if stack else None
             stack.append(trace_id)
 
+            description = tool_input.get("description") or ""
+            prompt = (tool_input.get("prompt") or "")[:12_000]  # cap at 12 KB
+
             agent_type = (
                 tool_input.get("subagent_type")
                 or tool_input.get("agent_type")
                 or ""
             )
             if not agent_type or agent_type in ("unknown", "general-purpose"):
-                agent_type = funny_name()
-            description = tool_input.get("description") or ""
-            prompt = (tool_input.get("prompt") or "")[:12_000]  # cap at 12 KB
+                agent_type = description or funny_name()
 
             conn.execute(
                 """
@@ -242,23 +283,30 @@ async def receive_event(request: Request):
 
             trace_id = stack.pop()
             row = conn.execute(
-                "SELECT started_at FROM traces WHERE id = ?", (trace_id,)
+                "SELECT started_at, prompt FROM traces WHERE id = ?", (trace_id,)
             ).fetchone()
             duration_ms = int((ts - row["started_at"]) * 1000) if row else 0
 
             # Normalise response: could be string or list of content blocks
             response_text = _normalise_response(tool_response)[:12_000]
 
+            # Estimate token counts and cost from text length
+            prompt_text = row["prompt"] if row else ""
+            input_tok, output_tok, cost = estimate_cost(prompt_text, response_text)
+
             conn.execute(
                 """
                 UPDATE traces
-                SET response     = ?,
-                    status       = 'completed',
-                    completed_at = ?,
-                    duration_ms  = ?
+                SET response      = ?,
+                    status        = 'completed',
+                    completed_at  = ?,
+                    duration_ms   = ?,
+                    input_tokens  = ?,
+                    output_tokens = ?,
+                    cost_usd      = ?
                 WHERE id = ?
                 """,
-                (response_text, ts, duration_ms, trace_id),
+                (response_text, ts, duration_ms, input_tok, output_tok, cost, trace_id),
             )
 
             await broadcast(
@@ -268,6 +316,9 @@ async def receive_event(request: Request):
                     "session_id": session_id,
                     "duration_ms": duration_ms,
                     "completed_at": ts,
+                    "input_tokens":  input_tok,
+                    "output_tokens": output_tok,
+                    "cost_usd":      cost,
                 }
             )
 
@@ -288,7 +339,10 @@ async def list_sessions():
                 COUNT(CASE WHEN t.status = 'running'     THEN 1 END) AS running_count,
                 COUNT(CASE WHEN t.status = 'interrupted' THEN 1 END) AS failed_count,
                 COALESCE(SUM(t.duration_ms), 0)                      AS total_agent_ms,
-                COALESCE(MAX(t.completed_at) - MIN(t.started_at), 0) AS wall_time_s
+                COALESCE(MAX(t.completed_at) - MIN(t.started_at), 0) AS wall_time_s,
+                COALESCE(SUM(t.input_tokens),  0)                    AS total_input_tokens,
+                COALESCE(SUM(t.output_tokens), 0)                    AS total_output_tokens,
+                COALESCE(SUM(t.cost_usd),      0)                    AS total_cost_usd
             FROM sessions s
             LEFT JOIN traces t ON t.session_id = s.id
             GROUP BY s.id
@@ -306,7 +360,8 @@ async def get_traces(session_id: str):
         rows = conn.execute(
             """
             SELECT id, parent_id, agent_type, description, prompt, response,
-                   status, started_at, completed_at, duration_ms
+                   status, started_at, completed_at, duration_ms,
+                   input_tokens, output_tokens, cost_usd
             FROM traces
             WHERE session_id = ?
             ORDER BY started_at ASC
@@ -348,6 +403,63 @@ async def sse_stream(request: Request):
             "Connection": "keep-alive",
         },
     )
+
+
+@app.get("/boards")
+async def list_boards():
+    """Return all boards ordered by most recent activity."""
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT board_id,
+                   COUNT(*)        AS message_count,
+                   MAX(timestamp)  AS last_activity,
+                   MIN(timestamp)  AS started_at
+            FROM board_messages
+            GROUP BY board_id
+            ORDER BY last_activity DESC
+            LIMIT 30
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/board/{board_id}")
+async def get_board(board_id: str):
+    """Return all messages for a board in chronological order."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM board_messages WHERE board_id = ? ORDER BY timestamp ASC",
+            (board_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/board/{board_id}")
+async def post_to_board(board_id: str, request: Request):
+    """Post a new message to a board. Broadcasts to all SSE clients."""
+    try:
+        data: dict = await request.json()
+    except Exception:
+        return {"ok": False, "error": "invalid JSON"}
+
+    msg = {
+        "id":         str(uuid.uuid4()),
+        "board_id":   board_id,
+        "agent_name": (data.get("agent_name") or "unknown")[:80],
+        "content":    (data.get("content")    or "")[:4_000],
+        "reply_to":   data.get("reply_to"),
+        "timestamp":  time.time(),
+    }
+
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO board_messages (id, board_id, agent_name, content, reply_to, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (msg["id"], msg["board_id"], msg["agent_name"],
+             msg["content"], msg["reply_to"], msg["timestamp"]),
+        )
+
+    await broadcast({"type": "board_message", "board_id": board_id, "message": msg})
+    return msg
 
 
 @app.delete("/sessions/{session_id}")
