@@ -37,18 +37,18 @@ if [[ "$PY_MAJOR" -lt 3 ]] || { [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -lt 9 
 fi
 echo "▸ Python $PY_VERSION — OK"
 
-# Create virtual environment
+# Create virtual environment (only if it doesn't exist yet)
 if [[ ! -d "$SCRIPT_DIR/.venv" ]]; then
   echo "▸ Creating virtual environment..."
   "$PYTHON" -m venv "$SCRIPT_DIR/.venv"
   echo "  Done."
 else
-  echo "▸ Virtual environment already exists — skipping."
+  echo "▸ Virtual environment already exists."
 fi
 
-# Install dependencies into the venv
+# Always install/upgrade dependencies so re-running picks up requirement changes
 echo "▸ Installing Python dependencies..."
-"$SCRIPT_DIR/.venv/bin/pip" install -r "$SCRIPT_DIR/requirements.txt" --quiet
+"$SCRIPT_DIR/.venv/bin/pip" install --upgrade -r "$SCRIPT_DIR/requirements.txt" --quiet
 echo "  Done."
 
 # Copy hook script (hook.py uses only stdlib — no venv needed to run it)
@@ -56,6 +56,10 @@ echo "▸ Copying hook to $HOOK_DEST..."
 mkdir -p "$HOME/.claude"
 cp "$SCRIPT_DIR/hook.py" "$HOOK_DEST"
 chmod +x "$HOOK_DEST"
+if [[ ! -f "$HOOK_DEST" ]]; then
+  echo "✗  Failed to copy hook to $HOOK_DEST — check permissions."
+  exit 1
+fi
 echo "  Done."
 
 echo ""
@@ -69,9 +73,19 @@ echo ""
 cat << EOF
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOOK_DEST session"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
-        "matcher": "Agent",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
@@ -82,7 +96,7 @@ cat << EOF
     ],
     "PostToolUse": [
       {
-        "matcher": "Agent",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",

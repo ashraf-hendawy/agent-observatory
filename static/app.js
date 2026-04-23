@@ -163,6 +163,7 @@ async function apiFetch(url, options) {
 function connectSSE() {
   const indicator = document.getElementById('live-indicator');
   const label     = indicator.querySelector('.live-label');
+  let backoff     = 1000; // start at 1s, cap at 30s
 
   const connect = () => {
     const source = new EventSource('/stream');
@@ -174,13 +175,15 @@ function connectSSE() {
     source.addEventListener('open', () => {
       indicator.className = 'live-indicator connected';
       label.textContent = 'Live';
+      backoff = 1000; // reset on successful connection
     });
 
     source.addEventListener('error', () => {
       indicator.className = 'live-indicator error';
       label.textContent = 'Disconnected';
       source.close();
-      setTimeout(connect, 5000);
+      setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, 30_000); // exponential backoff, max 30s
     });
   };
 
@@ -1052,8 +1055,8 @@ function renderTree() {
         ? `  ·  ~${formatTokens((d.data.input_tokens||0)+(d.data.output_tokens||0))} tok  ·  ~${formatCost(d.data.cost_usd)}`
         : '';
       tooltip.innerHTML = `
-        <div class="tooltip-agent">${getAgentIcon(d.data.agent_type)} ${agentLabel(d.data.agent_type)}${tokStr}</div>
-        <div class="tooltip-prompt">${truncate(d.data.prompt || d.data.description, 220)}</div>
+        <div class="tooltip-agent">${getAgentIcon(d.data.agent_type)} ${escHtml(agentLabel(d.data.agent_type))}${escHtml(tokStr)}</div>
+        <div class="tooltip-prompt">${escHtml(truncate(d.data.prompt || d.data.description, 220))}</div>
       `;
     })
     .on('mousemove', event => {

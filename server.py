@@ -46,6 +46,7 @@ _ANIMALS = [
 INPUT_PRICE_PER_M  = 3.00   # USD per 1M input tokens
 OUTPUT_PRICE_PER_M = 15.00  # USD per 1M output tokens
 CHARS_PER_TOKEN    = 4.0    # rough average for English text
+TRUNCATE_LIMIT     = 12_000 # max bytes stored for prompt/response fields
 
 
 def estimate_cost(prompt: str, response: str) -> tuple[int, int, float]:
@@ -60,9 +61,14 @@ def estimate_cost(prompt: str, response: str) -> tuple[int, int, float]:
 def funny_name() -> str:
     return f"{random.choice(_ADJECTIVES)} {random.choice(_ANIMALS)}"
 
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+
+logger = logging.getLogger("observatory")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -188,11 +194,26 @@ async def broadcast(event: dict) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(name)s  %(message)s")
     init_db()
     yield
 
 
 app = FastAPI(title="Agent Observatory", lifespan=lifespan)
+
+# Reject request bodies larger than 1 MB to prevent memory exhaustion
+MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MB
+
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "POST":
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > MAX_BODY_BYTES:
+                from fastapi.responses import JSONResponse
+                return JSONResponse({"ok": False, "error": "request body too large"}, status_code=413)
+        return await call_next(request)
+
+app.add_middleware(BodySizeLimitMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -223,6 +244,7 @@ async def receive_event(request: Request):
     try:
         data: dict = await request.json()
     except Exception:
+        logger.warning("POST /events — invalid JSON from %s", request.client)
         return {"ok": False, "error": "invalid JSON"}
 
     event_type: str = data.get("event", "")
@@ -257,7 +279,7 @@ async def receive_event(request: Request):
                 stack.append(trace_id)
 
                 description = tool_input.get("description") or ""
-                prompt = (tool_input.get("prompt") or "")[:12_000]
+                prompt = (tool_input.get("prompt") or "")[:TRUNCATE_LIMIT]
 
                 agent_type = (
                     tool_input.get("subagent_type")
@@ -275,7 +297,7 @@ async def receive_event(request: Request):
                 # Tool call: push onto per-tool stack for matching with its post event
                 session_tool_stacks.setdefault(session_id, {}).setdefault(tool_name, []).append(trace_id)
                 description = ""
-                prompt = json.dumps(tool_input)[:12_000]
+                prompt = json.dumps(tool_input)[:TRUNCATE_LIMIT]
                 agent_type = tool_name  # e.g. "Bash", "Read", "Write"
 
             conn.execute(
@@ -321,7 +343,7 @@ async def receive_event(request: Request):
             duration_ms = int((ts - row["started_at"]) * 1000) if row else 0
 
             # Normalise response: could be string or list of content blocks
-            response_text = _normalise_response(tool_response)[:12_000]
+            response_text = _normalise_response(tool_response)[:TRUNCATE_LIMIT]
 
             # Estimate token counts and cost from text length
             prompt_text = row["prompt"] if row else ""
@@ -367,6 +389,7 @@ async def register_session(request: Request):
     try:
         data: dict = await request.json()
     except Exception:
+        logger.warning("POST /session — invalid JSON from %s", request.client)
         return {"ok": False, "error": "invalid JSON"}
 
     session_id: str = data.get("session_id") or "unknown"
@@ -514,6 +537,7 @@ async def post_to_board(board_id: str, request: Request):
     try:
         data: dict = await request.json()
     except Exception:
+        logger.warning("POST /board/%s — invalid JSON from %s", board_id, request.client)
         return {"ok": False, "error": "invalid JSON"}
 
     msg = {
