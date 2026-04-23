@@ -25,20 +25,20 @@ let treeZoomTransform = null;
 // =============================================================
 
 const NAMED_ICONS = [
-  [['architecture', 'arch'],              '⬡'],
-  [['senior-engineer', 'senior engineer'],'⌬'],
-  [['engineer'],                          '⌬'],
-  [['team-lead', 'team lead'],            '◉'],
-  [['lead'],                              '◉'],
-  [['adr-writer', 'adr'],                 '◧'],
-  [['writer'],                            '✎'],
-  [['cross-team', 'scanner'],             '⊕'],
-  [['plan'],                              '◫'],
-  [['explore'],                           '◌'],
-  [['general-purpose', 'general'],        '◆'],
-  [['reviewer', 'review'],                '◎'],
-  [['claude-code', 'claude'],             '◈'],
-  [['root', 'session'],                   '◉'],
+  [['architecture', 'arch'],              '🏗️'],
+  [['senior-engineer', 'senior engineer'],'🧑‍💻'],
+  [['engineer'],                          '🔧'],
+  [['team-lead', 'team lead'],            '👑'],
+  [['lead'],                              '👑'],
+  [['adr-writer', 'adr'],                 '📋'],
+  [['writer'],                            '✏️'],
+  [['cross-team', 'scanner'],             '🔭'],
+  [['plan'],                              '🗺️'],
+  [['explore'],                           '🧭'],
+  [['general-purpose', 'general'],        '🤖'],
+  [['reviewer', 'review'],                '🔍'],
+  [['claude-code', 'claude'],             '🤖'],
+  [['root', 'session'],                   '🖥️'],
 ];
 
 const ANIMAL_ICONS = {
@@ -50,7 +50,7 @@ const ANIMAL_ICONS = {
 };
 
 function getAgentIcon(agentType) {
-  if (!agentType) return '◆';
+  if (!agentType) return '🤖';
   const t = agentType.toLowerCase();
 
   // Check named agent patterns
@@ -63,21 +63,22 @@ function getAgentIcon(agentType) {
     if (t.includes(animal)) return emoji;
   }
 
-  return '◆';
+  return '🤖';
 }
 
 // Tool-type icons and colors for activity nodes
 const TOOL_ICONS = {
-  Bash: '⬡', Read: '◈', Write: '✦', Edit: '✦',
-  Grep: '⌖', Glob: '⊞', WebFetch: '⊙', WebSearch: '⊛',
-  TodoWrite: '☰', TodoRead: '☰', NotebookEdit: '⊟',
+  Bash: '⚡', Read: '📖', Write: '📝', Edit: '✏️',
+  Grep: '🔍', Glob: '🗂️', WebFetch: '🌐', WebSearch: '🔎',
+  TodoWrite: '✅', TodoRead: '📋', NotebookEdit: '📓',
+  Agent: '🤖',
 };
 const TOOL_COLORS = {
   Bash: '#ffb800', Read: '#00d4ff', Write: '#00ff88', Edit: '#00ff88',
   Grep: '#bf5af2', Glob: '#bf5af2', WebFetch: '#ff6b6b', WebSearch: '#ff6b6b',
   TodoWrite: '#00d4ff', TodoRead: '#00d4ff', NotebookEdit: '#ffb800',
 };
-function getToolIcon(toolName)  { return TOOL_ICONS[toolName]  || '◇'; }
+function getToolIcon(toolName)  { return TOOL_ICONS[toolName]  || '🔩'; }
 function getToolColor(toolName) { return TOOL_COLORS[toolName] || '#4a5568'; }
 
 // =============================================================
@@ -1083,7 +1084,7 @@ function renderTree() {
   sessionNodes.append('text')
     .attr('class', 'node-icon')
     .attr('x', -CARD_W / 2 + 4 + (ICON_BOX - 2) / 2).attr('y', 1)
-    .text('◉');
+    .text('🚀');
 
   const scx = -CARD_W / 2 + ICON_BOX + 10;
   sessionNodes.append('text')
