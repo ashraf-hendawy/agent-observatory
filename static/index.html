@@ -136,6 +136,38 @@
             <div class="log-entries" id="log-entries"></div>
           </div>
         </div>
+
+        <div class="viz-view hidden" id="chat-view">
+          <div class="chat-layout">
+
+            <!-- Board list sidebar -->
+            <aside class="chat-sidebar">
+              <div class="chat-sidebar-header">Boards</div>
+              <div class="board-list" id="board-list">
+                <div class="empty-state" id="boards-empty">
+                  <div class="empty-icon">◌</div>
+                  <p>No boards yet</p>
+                </div>
+              </div>
+            </aside>
+
+            <!-- Message thread -->
+            <div class="chat-main">
+              <div class="chat-thread-header" id="chat-thread-header" hidden>
+                <span class="chat-board-id" id="chat-board-id"></span>
+                <span class="chat-msg-count" id="chat-msg-count"></span>
+              </div>
+              <div class="chat-thread" id="chat-thread">
+                <div class="empty-state large" id="chat-empty">
+                  <div class="empty-icon large">◌</div>
+                  <p>Select a board to view the conversation</p>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
       </div>
     </section>
 
@@ -232,37 +264,6 @@
     </aside>
 
   </main>
-
-        <div class="viz-view hidden" id="chat-view">
-          <div class="chat-layout">
-
-            <!-- Board list sidebar -->
-            <aside class="chat-sidebar">
-              <div class="chat-sidebar-header">Boards</div>
-              <div class="board-list" id="board-list">
-                <div class="empty-state" id="boards-empty">
-                  <div class="empty-icon">◌</div>
-                  <p>No boards yet</p>
-                </div>
-              </div>
-            </aside>
-
-            <!-- Message thread -->
-            <div class="chat-main">
-              <div class="chat-thread-header" id="chat-thread-header" hidden>
-                <span class="chat-board-id" id="chat-board-id"></span>
-                <span class="chat-msg-count" id="chat-msg-count"></span>
-              </div>
-              <div class="chat-thread" id="chat-thread">
-                <div class="empty-state large" id="chat-empty">
-                  <div class="empty-icon large">◌</div>
-                  <p>Select a board to view the conversation</p>
-                </div>
-              </div>
-            </div>
-
-          </div>
-        </div>
 
   <!-- Tooltip -->
   <div class="node-tooltip hidden" id="node-tooltip"></div>
