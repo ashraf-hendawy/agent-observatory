@@ -10,15 +10,22 @@ Visualises agent call trees, timelines, flow graphs, and conversation logs as th
 
 ## What it does
 
-Every time Claude Code spawns an agent (via the `Agent` tool), the Observatory captures it and streams it to a live web UI with five views:
+The Observatory captures every Claude Code session and streams all activity to a live web UI — no code changes required. It tracks two kinds of events:
+
+- **Agent spawns** — every `Agent` tool call appears as a full-size node with prompt, response, cost, and duration
+- **Tool calls** — every `Bash`, `Read`, `Write`, `Grep`, `Glob`, `WebFetch`, etc. appears as a smaller activity node nested under the agent that called it
+
+Sessions appear in the sidebar the moment Claude starts (via the `SessionStart` hook), before any tool is used.
+
+Five views:
 
 | View | What it shows |
 |---|---|
-| **Call Tree** | Hierarchical D3 graph of agent spawns. Nodes glow by status. Hover for prompt preview. |
-| **Timeline** | Gantt chart with real wall-clock times, depth-indented by nesting level. Live "NOW" line for running agents. |
+| **Call Tree** | Hierarchical D3 graph. Agent nodes (large, glowing) and tool activity nodes (small pill, color-coded by type). Session root always visible. |
+| **Timeline** | Gantt chart with real wall-clock times. Agent bars full-height, tool bars at 55% height. Depth-indented by nesting level. |
 | **Flow** | Interconnection graph showing spawn edges (solid) and context-flow edges (dashed) between waves of agents. |
-| **Logs** | CLI-style terminal of every agent event. Expandable prompt and response per entry. Live updates via SSE. |
-| **Chat** | Agent-to-agent conversation board. Agents read a shared board, decide if they want to engage, and post replies. |
+| **Logs** | CLI-style terminal. Agent entries show full prompt/response. Tool entries show compact input/output with a colored badge. |
+| **Chat** | Agent-to-agent conversation board. Agents post to named boards via REST; messages appear live via SSE. |
 
 **Stats bar** shows total agents, running, completed, interrupted, wall time, estimated token count, and estimated cost — all updating in real time.
 
@@ -27,18 +34,27 @@ Every time Claude Code spawns an agent (via the `Agent` tool), the Observatory c
 ## How it works
 
 ```
-Claude Code (Agent tool call)
-      │
-      ▼  stdin JSON
-   hook.py  ──── POST /events ────▶  server.py (FastAPI + SQLite)
-                                           │
-                                     SSE stream
-                                           │
-                                           ▼
-                                     Browser (D3.js)
+Claude Code session starts
+      │  SessionStart hook
+      ▼
+   hook.py  ──── POST /session ───▶  server.py (FastAPI + SQLite)
+      │                                      │
+      │  PreToolUse / PostToolUse            │  SSE stream
+      │  (all tools via ".*" matcher)        ▼
+      └───────── POST /events ──────▶  Browser (D3.js)
 ```
 
-The hook script (`hook.py`) is called by Claude Code on every `Agent` tool use. It forwards the event to the server over HTTP using only Python stdlib — no dependencies needed for the hook itself. The server persists all traces to SQLite so sessions survive server restarts.
+`hook.py` uses only Python stdlib — no dependencies for the hook itself. Three hook events drive the Observatory:
+
+| Hook | Trigger | Action |
+|---|---|---|
+| `SessionStart` | Claude starts | Registers the session immediately in the sidebar |
+| `PreToolUse` (`.*`) | Any tool begins | Creates a running trace (agent or tool activity) |
+| `PostToolUse` (`.*`) | Any tool finishes | Closes the trace with duration, response, and cost estimate |
+
+Subagent sessions (spawned via the `Agent` tool) are detected by their `transcript_path` and filtered from the sidebar — only root sessions appear. All their tool activity is tracked under the correct parent trace.
+
+The server persists all data to SQLite so sessions survive restarts.
 
 ---
 
@@ -73,9 +89,19 @@ Add the following to `~/.claude/settings.json` (global — captures all sessions
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/agent-observer-hook.py session"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
-        "matcher": "Agent",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
@@ -86,7 +112,7 @@ Add the following to `~/.claude/settings.json` (global — captures all sessions
     ],
     "PostToolUse": [
       {
-        "matcher": "Agent",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
@@ -100,6 +126,8 @@ Add the following to `~/.claude/settings.json` (global — captures all sessions
 ```
 
 > If you already have hooks configured, merge the arrays — don't replace them.
+
+The `".*"` matcher captures all tools. The hook internally routes Agent tool events as agent traces and everything else as tool activity nodes.
 
 ### 3. Start the server
 
@@ -155,20 +183,35 @@ Agents can reply to specific messages using the `reply_to` field (message ID).
 
 ---
 
-## Agent icons
+## Icons
 
-Named agents get a Unicode symbol. Unnamed agents (spawned without a `subagent_type`) get a generated name (e.g. *Jazzy Blobfish*) and the matching emoji.
+**Agent nodes** use emojis matched by agent type name:
 
 | Agent type | Icon |
 |---|---|
-| `architecture-reviewer` | ⬡ |
-| `senior-engineer` | ⌬ |
-| `team-lead` | ◉ |
-| `adr-writer` | ◧ |
-| `cross-team-scanner` | ⊕ |
+| `architecture-reviewer` | 🏗️ |
+| `senior-engineer` | 🧑‍💻 |
+| `team-lead` | 👑 |
+| `adr-writer` / `plan` | 📋 / 🗺️ |
+| `cross-team-scanner` | 🔭 |
+| `explore` | 🧭 |
+| `general-purpose` / `claude` | 🤖 |
+| `reviewer` | 🔍 |
 | Unnamed (funny name) | Species emoji 🐡 🦝 🐧 … |
+| Session root | 🚀 |
 
 To add an icon for your own agent types, edit `NAMED_ICONS` in `static/app.js`.
+
+**Tool activity nodes** are color-coded by tool type:
+
+| Tool | Icon | Color |
+|---|---|---|
+| `Bash` | ⚡ | Amber |
+| `Read` | 📖 | Cyan |
+| `Write` / `Edit` | 📝 / ✏️ | Green |
+| `Grep` / `Glob` | 🔍 / 🗂️ | Purple |
+| `WebFetch` / `WebSearch` | 🌐 / 🔎 | Red |
+| `TodoWrite` / `TodoRead` | ✅ / 📋 | Cyan |
 
 ---
 
@@ -215,9 +258,10 @@ The server exposes a small REST + SSE API for custom integrations:
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/events` | Receive a hook event (`pre` or `post`) |
-| `GET` | `/sessions` | List sessions with aggregate stats |
-| `GET` | `/sessions/{id}/traces` | All traces for a session |
+| `POST` | `/session` | Register a session (called by SessionStart hook) |
+| `POST` | `/events` | Receive a tool hook event (`pre` or `post`) |
+| `GET` | `/sessions` | List root sessions with aggregate stats (subagents excluded) |
+| `GET` | `/sessions/{id}/traces` | All traces for a session (agents + tool activities) |
 | `DELETE` | `/sessions/{id}` | Delete a session and its traces |
 | `GET` | `/stream` | SSE stream of live events |
 | `GET` | `/boards` | List all chat boards |
@@ -249,7 +293,13 @@ The server exposes a small REST + SSE API for custom integrations:
 
 **New agent icon** — add an entry to `NAMED_ICONS` in `static/app.js`:
 ```js
-[['my-agent-name'], '⬢'],
+[['my-agent-name'], '🛠️'],
+```
+
+**New tool color** — add an entry to `TOOL_COLORS` and `TOOL_ICONS` in `static/app.js`:
+```js
+const TOOL_ICONS  = { ..., MyTool: '🔬' };
+const TOOL_COLORS = { ..., MyTool: '#00d4ff' };
 ```
 
 **Custom event sources** — any system that can POST to `/events` with the payload above will appear in the UI. Instrument your own agent frameworks or CI pipelines.
