@@ -197,9 +197,11 @@ function handleSSEEvent(data) {
       if (!exists) {
         loadSessions();
       } else {
-        exists.trace_count   = (exists.trace_count   || 0) + 1;
-        exists.running_count = (exists.running_count || 0) + 1;
-        exists.last_seen     = Date.now() / 1000;
+        if (data.kind === 'agent' || !data.kind) {
+          exists.trace_count   = (exists.trace_count   || 0) + 1;
+          exists.running_count = (exists.running_count || 0) + 1;
+        }
+        exists.last_seen = Date.now() / 1000;
         renderSessionList();
       }
 
@@ -258,7 +260,9 @@ function handleSSEEvent(data) {
 
       const sess = state.sessions.find(s => s.id === data.session_id);
       if (sess) {
-        sess.running_count = Math.max(0, (sess.running_count || 1) - 1);
+        if (data.kind === 'agent' || !data.kind) {
+          sess.running_count = Math.max(0, (sess.running_count || 1) - 1);
+        }
         sess.last_seen = Date.now() / 1000;
         renderSessionList();
       }
@@ -416,10 +420,11 @@ async function deleteSelectedSession() {
 // =============================================================
 
 function updateStatsBar() {
-  const total     = state.traces.length;
-  const running   = state.traces.filter(t => t.status === 'running').length;
-  const completed = state.traces.filter(t => t.status === 'completed').length;
-  const failed    = state.traces.filter(t => t.status === 'interrupted').length;
+  const agents    = state.traces.filter(t => t.kind === 'agent' || !t.kind);
+  const total     = agents.length;
+  const running   = agents.filter(t => t.status === 'running').length;
+  const completed = agents.filter(t => t.status === 'completed').length;
+  const failed    = agents.filter(t => t.status === 'interrupted').length;
 
   const starts = state.traces.map(t => t.started_at).filter(Boolean);
   const ends   = state.traces.map(t => t.completed_at).filter(Boolean);
