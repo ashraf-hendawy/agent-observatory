@@ -43,35 +43,37 @@ _ANIMALS = [
 # Token counts are estimated from text length (4 chars ≈ 1 token).
 # ---------------------------------------------------------------------------
 
-CHARS_PER_TOKEN = 4.0    # rough average for English text
+CHARS_PER_TOKEN = 3.5    # Claude tokenizer: ~3.5 chars/token for mixed English/code
 TRUNCATE_LIMIT  = 12_000 # max bytes stored for prompt/response fields
 
 # ---------------------------------------------------------------------------
-# Per-model pricing (USD per 1M tokens).
-# Keys are lowercase substrings matched against the model name.
-# More specific entries are checked first.
+# Per-model pricing (USD per 1M tokens). Source: anthropic.com/pricing
+# Entries are checked in order — more specific patterns first.
 # ---------------------------------------------------------------------------
 _MODEL_PRICING: list[tuple[tuple[str, ...], float, float]] = [
-    # Claude 4.x Opus
-    (("claude-opus-4", "opus-4"),                   15.00, 75.00),
-    # Claude 4.x / 4.6 Sonnet (default)
-    (("claude-sonnet-4", "sonnet-4"),                3.00, 15.00),
-    # Claude 4.5 Haiku
-    (("claude-haiku-4", "haiku-4"),                  0.80,  4.00),
-    # Claude 3.7 / 3.5 Sonnet
+    # Claude Opus 4.5 / 4.6 / 4.7  ($5 / $25)
+    (("claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7",
+      "opus-4-5", "opus-4-6", "opus-4-7"),            5.00, 25.00),
+    # Claude Opus 4.0 deprecated    ($15 / $75)
+    (("claude-opus-4-0", "opus-4-0"),                15.00, 75.00),
+    # Claude Sonnet 4.x             ($3 / $15)
+    (("claude-sonnet-4", "sonnet-4"),                 3.00, 15.00),
+    # Claude Haiku 4.5              ($1 / $5)
+    (("claude-haiku-4-5", "haiku-4-5",
+      "claude-haiku-4", "haiku-4"),                   1.00,  5.00),
+    # Claude Sonnet 3.7 / 3.5      ($3 / $15)
     (("claude-3-7-sonnet", "claude-3-5-sonnet",
-      "sonnet-3-7", "sonnet-3-5", "claude-3.7",
-      "claude-3.5"),                                  3.00, 15.00),
-    # Claude 3.5 Haiku
-    (("claude-3-5-haiku", "haiku-3-5"),              0.80,  4.00),
-    # Claude 3 Opus
-    (("claude-3-opus", "opus-3"),                   15.00, 75.00),
-    # Claude 3 Haiku
-    (("claude-3-haiku", "haiku-3"),                  0.25,  1.25),
-    # Generic tier fallbacks (when version isn't clear)
-    (("opus",),                                     15.00, 75.00),
-    (("sonnet",),                                    3.00, 15.00),
-    (("haiku",),                                     0.80,  4.00),
+      "sonnet-3-7", "sonnet-3-5"),                    3.00, 15.00),
+    # Claude Haiku 3.5              ($0.80 / $4)
+    (("claude-3-5-haiku", "haiku-3-5"),               0.80,  4.00),
+    # Claude Opus 3                 ($15 / $75)
+    (("claude-3-opus", "opus-3"),                    15.00, 75.00),
+    # Claude Haiku 3                ($0.25 / $1.25)
+    (("claude-3-haiku", "haiku-3"),                   0.25,  1.25),
+    # Generic tier fallbacks (matched last)
+    (("opus",),                                       5.00, 25.00),  # assume modern Opus
+    (("sonnet",),                                     3.00, 15.00),
+    (("haiku",),                                      1.00,  5.00),  # assume modern Haiku
 ]
 
 _DEFAULT_INPUT_PRICE  = 3.00   # Sonnet pricing as safe default
