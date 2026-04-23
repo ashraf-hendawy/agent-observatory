@@ -325,6 +325,44 @@ async def receive_event(request: Request):
     return {"ok": True}
 
 
+@app.post("/session")
+async def register_session(request: Request):
+    """
+    Called by hook.py on any tool use to ensure the session is registered
+    as early as possible — before any Agent tool is spawned.
+    """
+    try:
+        data: dict = await request.json()
+    except Exception:
+        return {"ok": False, "error": "invalid JSON"}
+
+    session_id: str = data.get("session_id") or "unknown"
+    ts: float = data.get("timestamp") or time.time()
+
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT id FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+
+        conn.execute(
+            """
+            INSERT INTO sessions (id, started_at, last_seen, trace_count)
+            VALUES (?, ?, ?, 0)
+            ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen
+            """,
+            (session_id, ts, ts),
+        )
+
+        if not existing:
+            await broadcast({
+                "type": "session_created",
+                "session_id": session_id,
+                "started_at": ts,
+            })
+
+    return {"ok": True}
+
+
 @app.get("/sessions")
 async def list_sessions():
     """Return the 50 most recently active sessions with aggregate stats."""

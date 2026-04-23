@@ -61,21 +61,32 @@ def main() -> None:
         # Extract content from {type: tool_result, content: [...]} shape
         raw_response = raw_response.get("content") or raw_response.get("text") or ""
 
-    # --- Build payload ---
-    payload = {
-        "event": event_type,
-        "session_id": data.get("session_id") or "unknown",
-        "tool_name": tool_name,
-        "tool_input": tool_input,
-        "tool_response": raw_response,
-        "timestamp": time.time(),
-    }
-
     server_url = os.environ.get("AGENT_OBSERVER_URL", "http://localhost:8765")
+
+    if event_type == "session":
+        # Lightweight session registration — fired on any tool use so the
+        # session appears in the Observatory before any Agent is spawned.
+        payload = {
+            "session_id": data.get("session_id") or "unknown",
+            "timestamp": time.time(),
+        }
+        endpoint = f"{server_url}/session"
+    else:
+        # --- Build payload ---
+        payload = {
+            "event": event_type,
+            "session_id": data.get("session_id") or "unknown",
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+            "tool_response": raw_response,
+            "timestamp": time.time(),
+        }
+        endpoint = f"{server_url}/events"
+
     body = json.dumps(payload).encode("utf-8")
 
     req = urllib.request.Request(
-        f"{server_url}/events",
+        endpoint,
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",

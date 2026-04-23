@@ -246,6 +246,14 @@ function handleSSEEvent(data) {
       break;
     }
 
+    case 'session_created': {
+      const exists = state.sessions.find(s => s.id === data.session_id);
+      if (!exists) {
+        loadSessions();
+      }
+      break;
+    }
+
     case 'board_message': {
       const { board_id, message } = data;
 
