@@ -542,6 +542,31 @@ html, body {
 .meta-root        { fill: var(--text-muted); }
 .meta-unknown     { fill: var(--text-muted); }
 
+/* Tool activity nodes */
+.node-tool-card {
+  stroke: rgba(255,255,255,0.06);
+  stroke-width: 1;
+}
+.node-tool-icon {
+  font-size: 13px;
+  dominant-baseline: middle;
+  text-anchor: middle;
+  pointer-events: none;
+}
+.node-tool-label {
+  fill: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.node-tool-meta {
+  fill: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  pointer-events: none;
+}
+
 /* --- Timeline -------------------------------------------- */
 .timeline-svg { display: block; }
 
@@ -944,6 +969,37 @@ html, body {
   flex-direction: column;
   border-bottom: 1px solid var(--border);
   font-size: 11px;
+}
+
+.log-entry-tool {
+  background: rgba(255,255,255,0.015);
+}
+
+.log-tool-header {
+  padding: 4px 16px !important;
+  gap: 8px !important;
+}
+
+.log-tool-badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  border: 1px solid;
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+
+.log-tool-status {
+  color: var(--amber);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.tl-label-tool {
+  font-size: 9px;
+  opacity: 0.85;
 }
 
 .log-entry-header {

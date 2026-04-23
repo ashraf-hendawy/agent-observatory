@@ -66,6 +66,20 @@ function getAgentIcon(agentType) {
   return '◆';
 }
 
+// Tool-type icons and colors for activity nodes
+const TOOL_ICONS = {
+  Bash: '⬡', Read: '◈', Write: '✦', Edit: '✦',
+  Grep: '⌖', Glob: '⊞', WebFetch: '⊙', WebSearch: '⊛',
+  TodoWrite: '☰', TodoRead: '☰', NotebookEdit: '⊟',
+};
+const TOOL_COLORS = {
+  Bash: '#ffb800', Read: '#00d4ff', Write: '#00ff88', Edit: '#00ff88',
+  Grep: '#bf5af2', Glob: '#bf5af2', WebFetch: '#ff6b6b', WebSearch: '#ff6b6b',
+  TodoWrite: '#00d4ff', TodoRead: '#00d4ff', NotebookEdit: '#ffb800',
+};
+function getToolIcon(toolName)  { return TOOL_ICONS[toolName]  || '◇'; }
+function getToolColor(toolName) { return TOOL_COLORS[toolName] || '#4a5568'; }
+
 // =============================================================
 // Utilities
 // =============================================================
@@ -191,6 +205,7 @@ function handleSSEEvent(data) {
           parent_id: data.parent_id || null,
           agent_type: data.agent_type || 'unknown',
           description: data.description || '',
+          kind: data.kind || 'agent',
           prompt: '', response: null,
           status: 'running',
           started_at: data.started_at || Date.now() / 1000,
@@ -809,40 +824,65 @@ function renderLogs() {
 }
 
 function appendLogEntry(container, trace, byId) {
+  const isTool = trace.kind === 'tool';
   const el = document.createElement('div');
-  el.className = 'log-entry';
+  el.className = isTool ? 'log-entry log-entry-tool' : 'log-entry';
   el.dataset.id = trace.id;
 
-  const eventType   = trace.status === 'running' ? 'spawn' : (trace.status === 'interrupted' ? 'fail' : 'done');
-  const parentTrace = trace.parent_id ? byId[trace.parent_id] : null;
-  const children    = Object.values(byId).filter(t => t.parent_id === trace.id);
+  const timeStr = formatTime(trace.started_at);
+  const durStr  = formatDuration(trace.duration_ms) || '';
 
-  const costStr  = trace.cost_usd != null ? `~${formatCost(trace.cost_usd)}` : '';
-  const durStr   = formatDuration(trace.duration_ms) || '';
-  const timeStr  = formatTime(trace.started_at);
-  const icon     = getAgentIcon(trace.agent_type);
-  const name     = agentLabel(trace.agent_type);
+  if (isTool) {
+    // Compact single-line tool entry
+    const icon      = getToolIcon(trace.agent_type);
+    const color     = getToolColor(trace.agent_type);
+    const statusStr = trace.status === 'running' ? '⟳' : (trace.status === 'interrupted' ? '⚠' : '');
+    const inputLine = trace.prompt ? `<div class="log-section-title">Input</div><div class="log-code">${escHtml(trace.prompt)}</div>` : '';
+    const outputLine= trace.response ? `<div class="log-section-title">Output</div><div class="log-code">${escHtml(trace.response)}</div>` : '';
 
-  const parentLine  = parentTrace ? `<div class="log-section-title">Spawned by</div><div class="log-code">${agentLabel(parentTrace.agent_type)}</div>` : '';
-  const childrenLine= children.length ? `<div class="log-section-title">Spawned agents</div><div class="log-code">${children.map(c => `${getAgentIcon(c.agent_type)} ${agentLabel(c.agent_type)}`).join('\n')}</div>` : '';
-  const promptLine  = trace.prompt ? `<div class="log-section-title">Prompt</div><div class="log-code">${escHtml(trace.prompt)}</div>` : '';
-  const responseLine= trace.response ? `<div class="log-section-title">Response</div><div class="log-code">${escHtml(trace.response)}</div>` : '';
+    el.innerHTML = `
+      <div class="log-entry-header log-tool-header">
+        <span class="log-time">${timeStr}</span>
+        <span class="log-tool-badge" style="color:${color};border-color:${color}">${icon} ${escHtml(trace.agent_type)}</span>
+        <span class="log-tool-status">${statusStr}</span>
+        <span class="log-entry-cost">${durStr}</span>
+        <span class="log-chevron">▶</span>
+      </div>
+      <div class="log-entry-body">
+        ${inputLine}
+        ${outputLine}
+      </div>
+    `;
+  } else {
+    // Full agent entry
+    const eventType   = trace.status === 'running' ? 'spawn' : (trace.status === 'interrupted' ? 'fail' : 'done');
+    const parentTrace = trace.parent_id ? byId[trace.parent_id] : null;
+    const children    = Object.values(byId).filter(t => t.parent_id === trace.id && t.kind !== 'tool');
+    const costStr     = trace.cost_usd != null ? `~${formatCost(trace.cost_usd)}` : '';
+    const icon        = getAgentIcon(trace.agent_type);
+    const name        = agentLabel(trace.agent_type);
 
-  el.innerHTML = `
-    <div class="log-entry-header">
-      <span class="log-time">${timeStr}</span>
-      <span class="log-event-type log-event-${eventType}">${eventType.toUpperCase()}</span>
-      <span class="log-agent-name">${icon} ${name}${trace.description && trace.description !== trace.agent_type ? ' <span style="color:var(--text-muted)">· ' + escHtml(truncate(trace.description, 40)) + '</span>' : ''}</span>
-      <span class="log-entry-cost">${[durStr, costStr].filter(Boolean).join('  ·  ')}</span>
-      <span class="log-chevron">▶</span>
-    </div>
-    <div class="log-entry-body">
-      ${parentLine}
-      ${childrenLine}
-      ${promptLine}
-      ${responseLine}
-    </div>
-  `;
+    const parentLine   = parentTrace ? `<div class="log-section-title">Spawned by</div><div class="log-code">${agentLabel(parentTrace.agent_type)}</div>` : '';
+    const childrenLine = children.length ? `<div class="log-section-title">Spawned agents</div><div class="log-code">${children.map(c => `${getAgentIcon(c.agent_type)} ${agentLabel(c.agent_type)}`).join('\n')}</div>` : '';
+    const promptLine   = trace.prompt ? `<div class="log-section-title">Prompt</div><div class="log-code">${escHtml(trace.prompt)}</div>` : '';
+    const responseLine = trace.response ? `<div class="log-section-title">Response</div><div class="log-code">${escHtml(trace.response)}</div>` : '';
+
+    el.innerHTML = `
+      <div class="log-entry-header">
+        <span class="log-time">${timeStr}</span>
+        <span class="log-event-type log-event-${eventType}">${eventType.toUpperCase()}</span>
+        <span class="log-agent-name">${icon} ${name}${trace.description && trace.description !== trace.agent_type ? ' <span style="color:var(--text-muted)">· ' + escHtml(truncate(trace.description, 40)) + '</span>' : ''}</span>
+        <span class="log-entry-cost">${[durStr, costStr].filter(Boolean).join('  ·  ')}</span>
+        <span class="log-chevron">▶</span>
+      </div>
+      <div class="log-entry-body">
+        ${parentLine}
+        ${childrenLine}
+        ${promptLine}
+        ${responseLine}
+      </div>
+    `;
+  }
 
   el.querySelector('.log-entry-header').addEventListener('click', () => {
     el.classList.toggle('expanded');
@@ -872,9 +912,11 @@ function escHtml(str) {
 
 const CARD_W   = 196;
 const CARD_H   = 62;
-const ICON_BOX = 46;   // width of the icon area inside each card
-const NODE_W   = 256;  // horizontal spacing between depth levels
-const NODE_H   = 86;   // vertical spacing between siblings
+const ICON_BOX      = 46;   // width of the icon area inside each card
+const NODE_W        = 256;  // horizontal spacing between depth levels
+const NODE_H        = 86;   // vertical spacing between siblings
+const TOOL_CARD_W   = 130;  // smaller card for tool activity nodes
+const TOOL_CARD_H   = 34;   // shorter card for tool activity nodes
 
 function buildHierarchy(traces) {
   if (!traces.length) return null;
@@ -1009,57 +1051,39 @@ function renderTree() {
     })
     .on('mouseout', () => tooltip.classList.add('hidden'));
 
-  // Card background (with glow on non-unknown nodes)
-  node.append('rect')
+  // ---- Agent nodes ----
+  const agentNodes = node.filter(d => d.data.kind !== 'tool');
+
+  agentNodes.append('rect')
     .attr('class', 'node-card-bg')
-    .attr('x', -CARD_W / 2)
-    .attr('y', -CARD_H / 2)
-    .attr('width', CARD_W)
-    .attr('height', CARD_H)
-    .attr('rx', 4)
+    .attr('x', -CARD_W / 2).attr('y', -CARD_H / 2)
+    .attr('width', CARD_W).attr('height', CARD_H).attr('rx', 4)
     .attr('filter', d => GLOW_FILTER[d.data.status] ? `url(#${GLOW_FILTER[d.data.status]})` : null);
 
-  // Left status stripe
-  node.append('rect')
+  agentNodes.append('rect')
     .attr('class', d => `node-status-bar bar-${d.data.status}`)
-    .attr('x', -CARD_W / 2)
-    .attr('y', -CARD_H / 2 + 4)
-    .attr('width', 3)
-    .attr('height', CARD_H - 8)
-    .attr('rx', 1.5);
+    .attr('x', -CARD_W / 2).attr('y', -CARD_H / 2 + 4)
+    .attr('width', 3).attr('height', CARD_H - 8).attr('rx', 1.5);
 
-  // Icon box background
-  node.append('rect')
+  agentNodes.append('rect')
     .attr('class', d => `node-icon-bg icon-bg-${d.data.status}`)
-    .attr('x', -CARD_W / 2 + 4)
-    .attr('y', -CARD_H / 2 + 1)
-    .attr('width', ICON_BOX - 2)
-    .attr('height', CARD_H - 2)
-    .attr('rx', 3);
+    .attr('x', -CARD_W / 2 + 4).attr('y', -CARD_H / 2 + 1)
+    .attr('width', ICON_BOX - 2).attr('height', CARD_H - 2).attr('rx', 3);
 
-  // Icon (emoji or unicode symbol)
-  node.append('text')
+  agentNodes.append('text')
     .attr('class', 'node-icon')
-    .attr('x', -CARD_W / 2 + 4 + (ICON_BOX - 2) / 2)
-    .attr('y', 1)
+    .attr('x', -CARD_W / 2 + 4 + (ICON_BOX - 2) / 2).attr('y', 1)
     .text(d => getAgentIcon(d.data.agent_type));
 
-  // Content area
-  const cx = -CARD_W / 2 + ICON_BOX + 10;
-
-  node.append('text')
-    .attr('class', 'node-label')
-    .attr('x', cx).attr('y', -14)
+  const agentCx = -CARD_W / 2 + ICON_BOX + 10;
+  agentNodes.append('text')
+    .attr('class', 'node-label').attr('x', agentCx).attr('y', -14)
     .text(d => truncate(agentLabel(d.data.agent_type), 18));
-
-  node.append('text')
-    .attr('class', 'node-desc')
-    .attr('x', cx).attr('y', 0)
+  agentNodes.append('text')
+    .attr('class', 'node-desc').attr('x', agentCx).attr('y', 0)
     .text(d => truncate(d.data.description, 22));
-
-  node.append('text')
-    .attr('class', d => `node-meta meta-${d.data.status}`)
-    .attr('x', cx).attr('y', 14)
+  agentNodes.append('text')
+    .attr('class', d => `node-meta meta-${d.data.status}`).attr('x', agentCx).attr('y', 14)
     .text(d => {
       if (d.data.status === 'running')     return '⟳ running';
       if (d.data.status === 'interrupted') return '⚠ interrupted';
@@ -1067,6 +1091,39 @@ function renderTree() {
       const dur  = formatDuration(d.data.duration_ms) || '';
       const cost = d.data.cost_usd != null ? `  ~${formatCost(d.data.cost_usd)}` : '';
       return dur + cost;
+    });
+
+  // ---- Tool activity nodes (smaller pill-shaped cards) ----
+  const toolNodes = node.filter(d => d.data.kind === 'tool');
+
+  toolNodes.append('rect')
+    .attr('class', 'node-card-bg node-tool-card')
+    .attr('x', -TOOL_CARD_W / 2).attr('y', -TOOL_CARD_H / 2)
+    .attr('width', TOOL_CARD_W).attr('height', TOOL_CARD_H).attr('rx', 6);
+
+  toolNodes.append('rect')
+    .attr('class', 'node-tool-stripe')
+    .attr('x', -TOOL_CARD_W / 2).attr('y', -TOOL_CARD_H / 2 + 3)
+    .attr('width', 3).attr('height', TOOL_CARD_H - 6).attr('rx', 1.5)
+    .attr('fill', d => getToolColor(d.data.agent_type));
+
+  toolNodes.append('text')
+    .attr('class', 'node-tool-icon')
+    .attr('x', -TOOL_CARD_W / 2 + 16).attr('y', 1)
+    .attr('fill', d => getToolColor(d.data.agent_type))
+    .text(d => getToolIcon(d.data.agent_type));
+
+  toolNodes.append('text')
+    .attr('class', 'node-tool-label')
+    .attr('x', -TOOL_CARD_W / 2 + 30).attr('y', -5)
+    .text(d => d.data.agent_type);
+
+  toolNodes.append('text')
+    .attr('class', 'node-tool-meta')
+    .attr('x', -TOOL_CARD_W / 2 + 30).attr('y', 9)
+    .text(d => {
+      if (d.data.status === 'running') return '⟳';
+      return formatDuration(d.data.duration_ms) || '';
     });
 
   // Click background to deselect
@@ -1138,35 +1195,52 @@ function renderTimeline() {
 
   // Rows
   traces.forEach((trace, i) => {
-    const y     = i * rowH;
-    const yMid  = y + rowH / 2;
-    const depth = traceDepth(trace, byId);
+    const isTool = trace.kind === 'tool';
+    const y      = i * rowH;
+    const yMid   = y + rowH / 2;
+    const depth  = traceDepth(trace, byId);
     const indent = depth * 10;
     const isSelected = state.selectedTrace?.id === trace.id;
 
     // Icon + label
+    const icon  = isTool ? getToolIcon(trace.agent_type) : getAgentIcon(trace.agent_type);
+    const label = isTool ? trace.agent_type : truncate(agentLabel(trace.agent_type), 16);
     g.append('text')
-      .attr('class', 'tl-label')
+      .attr('class', isTool ? 'tl-label tl-label-tool' : 'tl-label')
+      .attr('fill', isTool ? getToolColor(trace.agent_type) : null)
       .attr('x', -10 - indent)
       .attr('y', yMid).attr('dy', '0.35em')
       .attr('text-anchor', 'end')
-      .text(`${getAgentIcon(trace.agent_type)} ${truncate(agentLabel(trace.agent_type), 16)}`);
+      .text(`${icon} ${label}`);
 
-    const barX  = xScale(new Date(trace.started_at * 1000)) + indent;
-    const barW  = Math.max(4, xScale(new Date((trace.completed_at || now) * 1000)) - xScale(new Date(trace.started_at * 1000)) - indent);
+    const barX = xScale(new Date(trace.started_at * 1000)) + indent;
+    const barW = Math.max(4, xScale(new Date((trace.completed_at || now) * 1000)) - xScale(new Date(trace.started_at * 1000)) - indent);
 
-    g.append('rect')
-      .attr('class', `tl-bar tl-bar-${trace.status}${isSelected ? ' selected' : ''}`)
-      .attr('x', barX).attr('y', y + 7)
-      .attr('width', barW).attr('height', rowH - 14).attr('rx', 3)
-      .on('click', () => selectTrace(trace));
+    // Tool bars: narrower, colored by tool type; agent bars: full height, colored by status
+    if (isTool) {
+      const barH   = Math.round((rowH - 14) * 0.55);
+      const barTop = y + (rowH - barH) / 2;
+      g.append('rect')
+        .attr('class', `tl-bar tl-bar-tool${isSelected ? ' selected' : ''}`)
+        .attr('fill', getToolColor(trace.agent_type))
+        .attr('x', barX).attr('y', barTop)
+        .attr('width', barW).attr('height', barH).attr('rx', 3)
+        .attr('opacity', 0.7)
+        .on('click', () => selectTrace(trace));
+    } else {
+      g.append('rect')
+        .attr('class', `tl-bar tl-bar-${trace.status}${isSelected ? ' selected' : ''}`)
+        .attr('x', barX).attr('y', y + 7)
+        .attr('width', barW).attr('height', rowH - 14).attr('rx', 3)
+        .on('click', () => selectTrace(trace));
 
-    if (trace.duration_ms && barW > 42) {
-      g.append('text')
-        .attr('class', 'tl-bar-label')
-        .attr('x', barX + barW / 2).attr('y', yMid).attr('dy', '0.35em')
-        .attr('text-anchor', 'middle')
-        .text(formatDuration(trace.duration_ms));
+      if (trace.duration_ms && barW > 42) {
+        g.append('text')
+          .attr('class', 'tl-bar-label')
+          .attr('x', barX + barW / 2).attr('y', yMid).attr('dy', '0.35em')
+          .attr('text-anchor', 'middle')
+          .text(formatDuration(trace.duration_ms));
+      }
     }
   });
 }

@@ -79,6 +79,10 @@ STATIC_DIR = Path(__file__).parent / "static"
 # Used to infer parent-child relationships from sequential hook events.
 session_stacks: dict[str, list[str]] = {}
 
+# Per-session tool stacks: session_id -> tool_name -> [trace_id, ...]
+# Separate from agent stacks so tool pre/post events close the right trace.
+session_tool_stacks: dict[str, dict[str, list[str]]] = {}
+
 # SSE client queues
 sse_clients: list[asyncio.Queue] = []
 
@@ -144,6 +148,17 @@ def init_db() -> None:
         for col, typ in [("input_tokens", "INTEGER"), ("output_tokens", "INTEGER"), ("cost_usd", "REAL")]:
             try:
                 conn.execute(f"ALTER TABLE traces ADD COLUMN {col} {typ}")
+            except Exception:
+                pass
+        # Migrate: tool activity kind column
+        try:
+            conn.execute("ALTER TABLE traces ADD COLUMN kind TEXT DEFAULT 'agent'")
+        except Exception:
+            pass
+        # Migrate: subagent session columns
+        for col, typ in [("is_subagent", "INTEGER DEFAULT 0"), ("parent_session_id", "TEXT")]:
+            try:
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typ}")
             except Exception:
                 pass
 
@@ -214,10 +229,12 @@ async def receive_event(request: Request):
     session_id: str = data.get("session_id") or "unknown"
     tool_input: dict = data.get("tool_input") or {}
     tool_response: Optional[str] = data.get("tool_response")
+    tool_name: str = data.get("tool_name") or ""
+    kind: str = data.get("kind") or "agent"
     ts: float = data.get("timestamp") or time.time()
 
     with get_db() as conn:
-        # Upsert the session row
+        # Upsert the session row (without touching is_subagent — already set by /session)
         conn.execute(
             """
             INSERT INTO sessions (id, started_at, last_seen, trace_count)
@@ -229,36 +246,46 @@ async def receive_event(request: Request):
 
         if event_type == "pre":
             # ----------------------------------------------------------------
-            # A new agent is being spawned — create a trace record.
+            # A new trace is starting — agent spawn or tool call.
             # ----------------------------------------------------------------
             trace_id = str(uuid.uuid4())
             stack = session_stacks.setdefault(session_id, [])
             parent_id = stack[-1] if stack else None
-            stack.append(trace_id)
 
-            description = tool_input.get("description") or ""
-            prompt = (tool_input.get("prompt") or "")[:12_000]  # cap at 12 KB
+            if kind == "agent":
+                # Agent spawn: push onto agent stack so its tool children nest under it
+                stack.append(trace_id)
 
-            agent_type = (
-                tool_input.get("subagent_type")
-                or tool_input.get("agent_type")
-                or ""
-            )
-            if not agent_type or agent_type in ("unknown", "general-purpose"):
-                agent_type = description or funny_name()
+                description = tool_input.get("description") or ""
+                prompt = (tool_input.get("prompt") or "")[:12_000]
+
+                agent_type = (
+                    tool_input.get("subagent_type")
+                    or tool_input.get("agent_type")
+                    or ""
+                )
+                if not agent_type or agent_type in ("unknown", "general-purpose"):
+                    agent_type = description or funny_name()
+
+                conn.execute(
+                    "UPDATE sessions SET trace_count = trace_count + 1 WHERE id = ?",
+                    (session_id,),
+                )
+            else:
+                # Tool call: push onto per-tool stack for matching with its post event
+                session_tool_stacks.setdefault(session_id, {}).setdefault(tool_name, []).append(trace_id)
+                description = ""
+                prompt = json.dumps(tool_input)[:12_000]
+                agent_type = tool_name  # e.g. "Bash", "Read", "Write"
 
             conn.execute(
                 """
                 INSERT INTO traces
                     (id, session_id, parent_id, agent_type, description,
-                     prompt, status, started_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+                     prompt, status, started_at, kind)
+                VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)
                 """,
-                (trace_id, session_id, parent_id, agent_type, description, prompt, ts),
-            )
-            conn.execute(
-                "UPDATE sessions SET trace_count = trace_count + 1 WHERE id = ?",
-                (session_id,),
+                (trace_id, session_id, parent_id, agent_type, description, prompt, ts, kind),
             )
 
             await broadcast(
@@ -269,19 +296,25 @@ async def receive_event(request: Request):
                     "parent_id": parent_id,
                     "agent_type": agent_type,
                     "description": description,
+                    "kind": kind,
                     "started_at": ts,
                 }
             )
 
         elif event_type == "post":
             # ----------------------------------------------------------------
-            # An agent has completed — close its trace record.
+            # A trace has completed — close its record.
             # ----------------------------------------------------------------
-            stack = session_stacks.get(session_id, [])
-            if not stack:
-                return {"ok": True, "note": "no pending trace to close"}
-
-            trace_id = stack.pop()
+            if kind == "agent":
+                stack = session_stacks.get(session_id, [])
+                if not stack:
+                    return {"ok": True, "note": "no pending agent trace to close"}
+                trace_id = stack.pop()
+            else:
+                tool_stack = session_tool_stacks.get(session_id, {}).get(tool_name, [])
+                if not tool_stack:
+                    return {"ok": True, "note": "no pending tool trace to close"}
+                trace_id = tool_stack.pop()
             row = conn.execute(
                 "SELECT started_at, prompt FROM traces WHERE id = ?", (trace_id,)
             ).fetchone()
@@ -338,6 +371,8 @@ async def register_session(request: Request):
 
     session_id: str = data.get("session_id") or "unknown"
     ts: float = data.get("timestamp") or time.time()
+    is_subagent: int = int(data.get("is_subagent") or 0)
+    parent_session_id: Optional[str] = data.get("parent_session_id")
 
     with get_db() as conn:
         existing = conn.execute(
@@ -346,14 +381,15 @@ async def register_session(request: Request):
 
         conn.execute(
             """
-            INSERT INTO sessions (id, started_at, last_seen, trace_count)
-            VALUES (?, ?, ?, 0)
+            INSERT INTO sessions (id, started_at, last_seen, trace_count, is_subagent, parent_session_id)
+            VALUES (?, ?, ?, 0, ?, ?)
             ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen
             """,
-            (session_id, ts, ts),
+            (session_id, ts, ts, is_subagent, parent_session_id),
         )
 
-        if not existing:
+        # Only announce root sessions to the UI
+        if not existing and not is_subagent:
             await broadcast({
                 "type": "session_created",
                 "session_id": session_id,
@@ -383,6 +419,7 @@ async def list_sessions():
                 COALESCE(SUM(t.cost_usd),      0)                    AS total_cost_usd
             FROM sessions s
             LEFT JOIN traces t ON t.session_id = s.id
+            WHERE s.is_subagent = 0
             GROUP BY s.id
             ORDER BY s.last_seen DESC
             LIMIT 50
@@ -399,7 +436,7 @@ async def get_traces(session_id: str):
             """
             SELECT id, parent_id, agent_type, description, prompt, response,
                    status, started_at, completed_at, duration_ms,
-                   input_tokens, output_tokens, cost_usd
+                   input_tokens, output_tokens, cost_usd, kind
             FROM traces
             WHERE session_id = ?
             ORDER BY started_at ASC
@@ -508,6 +545,8 @@ async def delete_session(session_id: str):
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     if session_id in session_stacks:
         del session_stacks[session_id]
+    if session_id in session_tool_stacks:
+        del session_tool_stacks[session_id]
     return {"ok": True}
 
 

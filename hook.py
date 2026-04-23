@@ -62,23 +62,38 @@ def main() -> None:
         raw_response = raw_response.get("content") or raw_response.get("text") or ""
 
     server_url = os.environ.get("AGENT_OBSERVER_URL", "http://localhost:8765")
+    session_id = data.get("session_id") or "unknown"
 
     if event_type == "session":
-        # Lightweight session registration — fired on any tool use so the
-        # session appears in the Observatory before any Agent is spawned.
+        # Lightweight session registration — detect subagents via transcript_path.
+        transcript_path = data.get("transcript_path") or ""
+        is_subagent = "/subagents/" in transcript_path
+
+        # Extract parent session ID from path: .../<parent-uuid>/subagents/agent-xxx.jsonl
+        parent_session_id = None
+        if is_subagent:
+            parts = transcript_path.replace("\\", "/").split("/subagents/")
+            if len(parts) >= 2:
+                parent_session_id = parts[0].rstrip("/").split("/")[-1]
+
         payload = {
-            "session_id": data.get("session_id") or "unknown",
+            "session_id": session_id,
             "timestamp": time.time(),
+            "is_subagent": int(is_subagent),
+            "parent_session_id": parent_session_id,
         }
         endpoint = f"{server_url}/session"
     else:
-        # --- Build payload ---
+        # Determine kind: agent spawn vs regular tool call
+        kind = "agent" if tool_name == "Agent" else "tool"
+
         payload = {
             "event": event_type,
-            "session_id": data.get("session_id") or "unknown",
+            "session_id": session_id,
             "tool_name": tool_name,
             "tool_input": tool_input,
             "tool_response": raw_response,
+            "kind": kind,
             "timestamp": time.time(),
         }
         endpoint = f"{server_url}/events"
