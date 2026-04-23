@@ -167,6 +167,11 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typ}")
             except Exception:
                 pass
+        # Migrate: session_id on board_messages for per-session board scoping
+        try:
+            conn.execute("ALTER TABLE board_messages ADD COLUMN session_id TEXT")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -504,19 +509,32 @@ async def sse_stream(request: Request):
 
 
 @app.get("/boards")
-async def list_boards():
-    """Return all boards ordered by most recent activity."""
+async def list_boards(session_id: Optional[str] = None):
+    """Return boards for a session, ordered by most recent activity."""
     with get_db() as conn:
-        rows = conn.execute("""
-            SELECT board_id,
-                   COUNT(*)        AS message_count,
-                   MAX(timestamp)  AS last_activity,
-                   MIN(timestamp)  AS started_at
-            FROM board_messages
-            GROUP BY board_id
-            ORDER BY last_activity DESC
-            LIMIT 30
-        """).fetchall()
+        if session_id:
+            rows = conn.execute("""
+                SELECT board_id,
+                       COUNT(*)        AS message_count,
+                       MAX(timestamp)  AS last_activity,
+                       MIN(timestamp)  AS started_at
+                FROM board_messages
+                WHERE session_id = ?
+                GROUP BY board_id
+                ORDER BY last_activity DESC
+                LIMIT 30
+            """, (session_id,)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT board_id,
+                       COUNT(*)        AS message_count,
+                       MAX(timestamp)  AS last_activity,
+                       MIN(timestamp)  AS started_at
+                FROM board_messages
+                GROUP BY board_id
+                ORDER BY last_activity DESC
+                LIMIT 30
+            """).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -543,6 +561,7 @@ async def post_to_board(board_id: str, request: Request):
     msg = {
         "id":         str(uuid.uuid4()),
         "board_id":   board_id,
+        "session_id": data.get("session_id") or None,
         "agent_name": (data.get("agent_name") or "unknown")[:80],
         "content":    (data.get("content")    or "")[:4_000],
         "reply_to":   data.get("reply_to"),
@@ -551,13 +570,13 @@ async def post_to_board(board_id: str, request: Request):
 
     with get_db() as conn:
         conn.execute(
-            """INSERT INTO board_messages (id, board_id, agent_name, content, reply_to, timestamp)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (msg["id"], msg["board_id"], msg["agent_name"],
+            """INSERT INTO board_messages (id, board_id, session_id, agent_name, content, reply_to, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (msg["id"], msg["board_id"], msg["session_id"], msg["agent_name"],
              msg["content"], msg["reply_to"], msg["timestamp"]),
         )
 
-    await broadcast({"type": "board_message", "board_id": board_id, "message": msg})
+    await broadcast({"type": "board_message", "board_id": board_id, "session_id": msg["session_id"], "message": msg})
     return msg
 
 
@@ -566,6 +585,7 @@ async def delete_session(session_id: str):
     """Remove a session and all its traces."""
     with get_db() as conn:
         conn.execute("DELETE FROM traces WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM board_messages WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     if session_id in session_stacks:
         del session_stacks[session_id]

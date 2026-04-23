@@ -276,6 +276,9 @@ function handleSSEEvent(data) {
     case 'board_message': {
       const { board_id, message } = data;
 
+      // Only update UI if this message belongs to the currently selected session
+      if (data.session_id && data.session_id !== state.selectedSessionId) break;
+
       if (!chatState.messages[board_id]) chatState.messages[board_id] = [];
       chatState.messages[board_id].push(message);
 
@@ -372,6 +375,11 @@ async function selectSession(id) {
   state.selectedTrace = null;
   treeZoomTransform = null;
 
+  // Reset chat state so boards from the previous session don't bleed through
+  chatState.boards = [];
+  chatState.selectedBoardId = null;
+  chatState.messages = {};
+
   document.querySelectorAll('.session-item')
     .forEach(el => el.classList.toggle('active', el.dataset.id === id));
 
@@ -452,9 +460,10 @@ const chatState = {
   messages:       {},        // board_id -> [msg]
 };
 
-async function loadBoards() {
+async function loadBoards(sessionId) {
   try {
-    chatState.boards = await apiFetch('/boards');
+    const url = sessionId ? `/boards?session_id=${encodeURIComponent(sessionId)}` : '/boards';
+    chatState.boards = await apiFetch(url);
     renderBoardList();
   } catch (err) { console.warn('[Observatory] Failed to load boards:', err); }
 }
@@ -547,7 +556,7 @@ function appendChatBubble(container, msg, allMessages) {
 }
 
 function renderChat() {
-  loadBoards();
+  loadBoards(state.selectedSessionId);
 }
 
 function switchView(view) {
