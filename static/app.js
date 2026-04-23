@@ -1370,6 +1370,8 @@ function renderDetail(trace) {
   const costEl = document.getElementById('detail-cost');
   costEl.textContent = trace.cost_usd != null ? `~${formatCost(trace.cost_usd)}` : '—';
   costEl.className   = `meta-val${trace.cost_usd != null ? ' green' : ''}`;
+  const modelEl = document.getElementById('detail-model');
+  if (modelEl) modelEl.textContent = trace.model || '—';
 
   // Hierarchy
   const byId = {};

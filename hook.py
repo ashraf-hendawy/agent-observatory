@@ -32,6 +32,37 @@ import urllib.error
 import urllib.request
 
 
+def _detect_model(data: dict, tool_input: dict) -> str:
+    """Best-effort model detection from hook payload and environment."""
+    # 1. Explicit model in the hook payload (Claude Code may include it)
+    model = data.get("model") or ""
+    if model:
+        return model
+
+    # 2. Model specified in the Agent tool_input (orchestrator overriding the model)
+    model = tool_input.get("model") or ""
+    if model:
+        return model
+
+    # 3. CLAUDE_MODEL environment variable (set by Claude Code runtime)
+    model = os.environ.get("CLAUDE_MODEL") or ""
+    if model:
+        return model
+
+    # 4. Fallback: read the model from ~/.claude/settings.json
+    try:
+        settings_path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+        with open(settings_path) as f:
+            settings = json.load(f)
+        model = settings.get("model") or ""
+        if model:
+            return model
+    except Exception:
+        pass
+
+    return "unknown"
+
+
 def main() -> None:
     event_type = sys.argv[1] if len(sys.argv) > 1 else "unknown"
 
@@ -64,6 +95,8 @@ def main() -> None:
     server_url = os.environ.get("AGENT_OBSERVER_URL", "http://localhost:8765")
     session_id = data.get("session_id") or "unknown"
 
+    model = _detect_model(data, tool_input)
+
     if event_type == "session":
         # Lightweight session registration — detect subagents via transcript_path.
         transcript_path = data.get("transcript_path") or ""
@@ -81,6 +114,7 @@ def main() -> None:
             "timestamp": time.time(),
             "is_subagent": int(is_subagent),
             "parent_session_id": parent_session_id,
+            "model": model,
         }
         endpoint = f"{server_url}/session"
     else:
@@ -94,6 +128,7 @@ def main() -> None:
             "tool_input": tool_input,
             "tool_response": raw_response,
             "kind": kind,
+            "model": model,
             "timestamp": time.time(),
         }
         endpoint = f"{server_url}/events"

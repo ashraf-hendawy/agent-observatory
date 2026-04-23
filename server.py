@@ -43,18 +43,56 @@ _ANIMALS = [
 # Token counts are estimated from text length (4 chars ≈ 1 token).
 # ---------------------------------------------------------------------------
 
-INPUT_PRICE_PER_M  = 3.00   # USD per 1M input tokens
-OUTPUT_PRICE_PER_M = 15.00  # USD per 1M output tokens
-CHARS_PER_TOKEN    = 4.0    # rough average for English text
-TRUNCATE_LIMIT     = 12_000 # max bytes stored for prompt/response fields
+CHARS_PER_TOKEN = 4.0    # rough average for English text
+TRUNCATE_LIMIT  = 12_000 # max bytes stored for prompt/response fields
+
+# ---------------------------------------------------------------------------
+# Per-model pricing (USD per 1M tokens).
+# Keys are lowercase substrings matched against the model name.
+# More specific entries are checked first.
+# ---------------------------------------------------------------------------
+_MODEL_PRICING: list[tuple[tuple[str, ...], float, float]] = [
+    # Claude 4.x Opus
+    (("claude-opus-4", "opus-4"),                   15.00, 75.00),
+    # Claude 4.x / 4.6 Sonnet (default)
+    (("claude-sonnet-4", "sonnet-4"),                3.00, 15.00),
+    # Claude 4.5 Haiku
+    (("claude-haiku-4", "haiku-4"),                  0.80,  4.00),
+    # Claude 3.7 / 3.5 Sonnet
+    (("claude-3-7-sonnet", "claude-3-5-sonnet",
+      "sonnet-3-7", "sonnet-3-5", "claude-3.7",
+      "claude-3.5"),                                  3.00, 15.00),
+    # Claude 3.5 Haiku
+    (("claude-3-5-haiku", "haiku-3-5"),              0.80,  4.00),
+    # Claude 3 Opus
+    (("claude-3-opus", "opus-3"),                   15.00, 75.00),
+    # Claude 3 Haiku
+    (("claude-3-haiku", "haiku-3"),                  0.25,  1.25),
+    # Generic tier fallbacks (when version isn't clear)
+    (("opus",),                                     15.00, 75.00),
+    (("sonnet",),                                    3.00, 15.00),
+    (("haiku",),                                     0.80,  4.00),
+]
+
+_DEFAULT_INPUT_PRICE  = 3.00   # Sonnet pricing as safe default
+_DEFAULT_OUTPUT_PRICE = 15.00
 
 
-def estimate_cost(prompt: str, response: str) -> tuple[int, int, float]:
+def _price_for_model(model: str) -> tuple[float, float]:
+    """Return (input_price_per_M, output_price_per_M) for a model string."""
+    m = (model or "").lower()
+    for keywords, inp, out in _MODEL_PRICING:
+        if any(k in m for k in keywords):
+            return inp, out
+    return _DEFAULT_INPUT_PRICE, _DEFAULT_OUTPUT_PRICE
+
+
+def estimate_cost(prompt: str, response: str, model: str = "") -> tuple[int, int, float]:
     """Return (input_tokens, output_tokens, cost_usd) — all estimates."""
     input_tokens  = int(len(prompt)   / CHARS_PER_TOKEN)
     output_tokens = int(len(response) / CHARS_PER_TOKEN)
-    cost = (input_tokens  * INPUT_PRICE_PER_M  / 1_000_000 +
-            output_tokens * OUTPUT_PRICE_PER_M / 1_000_000)
+    inp_price, out_price = _price_for_model(model)
+    cost = (input_tokens * inp_price + output_tokens * out_price) / 1_000_000
     return input_tokens, output_tokens, round(cost, 6)
 
 
@@ -172,6 +210,15 @@ def init_db() -> None:
             conn.execute("ALTER TABLE board_messages ADD COLUMN session_id TEXT")
         except Exception:
             pass
+        # Migrate: model tracking for per-model cost estimation
+        try:
+            conn.execute("ALTER TABLE traces ADD COLUMN model TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT ''")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +305,7 @@ async def receive_event(request: Request):
     tool_response: Optional[str] = data.get("tool_response")
     tool_name: str = data.get("tool_name") or ""
     kind: str = data.get("kind") or "agent"
+    model: str = data.get("model") or ""
     ts: float = data.get("timestamp") or time.time()
 
     with get_db() as conn:
@@ -309,10 +357,10 @@ async def receive_event(request: Request):
                 """
                 INSERT INTO traces
                     (id, session_id, parent_id, agent_type, description,
-                     prompt, status, started_at, kind)
-                VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)
+                     prompt, status, started_at, kind, model)
+                VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)
                 """,
-                (trace_id, session_id, parent_id, agent_type, description, prompt, ts, kind),
+                (trace_id, session_id, parent_id, agent_type, description, prompt, ts, kind, model),
             )
 
             await broadcast(
@@ -343,16 +391,17 @@ async def receive_event(request: Request):
                     return {"ok": True, "note": "no pending tool trace to close"}
                 trace_id = tool_stack.pop()
             row = conn.execute(
-                "SELECT started_at, prompt FROM traces WHERE id = ?", (trace_id,)
+                "SELECT started_at, prompt, model FROM traces WHERE id = ?", (trace_id,)
             ).fetchone()
             duration_ms = int((ts - row["started_at"]) * 1000) if row else 0
 
             # Normalise response: could be string or list of content blocks
             response_text = _normalise_response(tool_response)[:TRUNCATE_LIMIT]
 
-            # Estimate token counts and cost from text length
+            # Estimate token counts and cost — use model from trace or fallback to payload
             prompt_text = row["prompt"] if row else ""
-            input_tok, output_tok, cost = estimate_cost(prompt_text, response_text)
+            trace_model = (row["model"] if row else "") or model
+            input_tok, output_tok, cost = estimate_cost(prompt_text, response_text, trace_model)
 
             conn.execute(
                 """
@@ -401,6 +450,7 @@ async def register_session(request: Request):
     ts: float = data.get("timestamp") or time.time()
     is_subagent: int = int(data.get("is_subagent") or 0)
     parent_session_id: Optional[str] = data.get("parent_session_id")
+    model: str = data.get("model") or ""
 
     with get_db() as conn:
         existing = conn.execute(
@@ -409,11 +459,12 @@ async def register_session(request: Request):
 
         conn.execute(
             """
-            INSERT INTO sessions (id, started_at, last_seen, trace_count, is_subagent, parent_session_id)
-            VALUES (?, ?, ?, 0, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen
+            INSERT INTO sessions (id, started_at, last_seen, trace_count, is_subagent, parent_session_id, model)
+            VALUES (?, ?, ?, 0, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen,
+                                          model = COALESCE(NULLIF(excluded.model, ''), model)
             """,
-            (session_id, ts, ts, is_subagent, parent_session_id),
+            (session_id, ts, ts, is_subagent, parent_session_id, model),
         )
 
         # Only announce root sessions to the UI
@@ -464,7 +515,7 @@ async def get_traces(session_id: str):
             """
             SELECT id, parent_id, agent_type, description, prompt, response,
                    status, started_at, completed_at, duration_ms,
-                   input_tokens, output_tokens, cost_usd, kind
+                   input_tokens, output_tokens, cost_usd, kind, model
             FROM traces
             WHERE session_id = ?
             ORDER BY started_at ASC
