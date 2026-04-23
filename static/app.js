@@ -918,8 +918,7 @@ const NODE_H        = 86;   // vertical spacing between siblings
 const TOOL_CARD_W   = 130;  // smaller card for tool activity nodes
 const TOOL_CARD_H   = 34;   // shorter card for tool activity nodes
 
-function buildHierarchy(traces) {
-  if (!traces.length) return null;
+function buildHierarchy(traces, session) {
   const map = {};
   traces.forEach(t => { map[t.id] = { ...t, children: [] }; });
   const roots = [];
@@ -927,8 +926,18 @@ function buildHierarchy(traces) {
     if (t.parent_id && map[t.parent_id]) map[t.parent_id].children.push(map[t.id]);
     else roots.push(map[t.id]);
   });
-  if (roots.length === 1) return roots[0];
-  return { id: '__root__', agent_type: 'Session', status: 'root', description: '', prompt: '', response: null, children: roots };
+  // Always place a session-start root node at the top of the tree
+  const sessionNode = {
+    id: '__root__',
+    kind: 'session',
+    agent_type: 'Session',
+    status: 'root',
+    description: session ? truncate(session.id, 16) : '',
+    started_at: session?.started_at,
+    prompt: '', response: null,
+    children: roots,
+  };
+  return sessionNode;
 }
 
 // SVG glow filter IDs by status
@@ -968,13 +977,14 @@ function renderTree() {
   const empty     = document.getElementById('tree-empty');
   container.querySelectorAll('svg').forEach(el => el.remove());
 
-  if (!state.selectedSessionId || !state.traces.length) {
+  if (!state.selectedSessionId) {
     empty.style.display = '';
     return;
   }
   empty.style.display = 'none';
 
-  const rootData = buildHierarchy(state.traces);
+  const session  = state.sessions.find(s => s.id === state.selectedSessionId);
+  const rootData = buildHierarchy(state.traces, session);
   if (!rootData) return;
 
   const hierarchy = d3.hierarchy(rootData);
@@ -1051,8 +1061,43 @@ function renderTree() {
     })
     .on('mouseout', () => tooltip.classList.add('hidden'));
 
+  // ---- Session root node ----
+  const sessionNodes = node.filter(d => d.data.kind === 'session');
+
+  sessionNodes.append('rect')
+    .attr('class', 'node-card-bg')
+    .attr('x', -CARD_W / 2).attr('y', -CARD_H / 2)
+    .attr('width', CARD_W).attr('height', CARD_H).attr('rx', 4)
+    .attr('filter', 'url(#glow-cyan)');
+
+  sessionNodes.append('rect')
+    .attr('class', 'node-status-bar bar-root')
+    .attr('x', -CARD_W / 2).attr('y', -CARD_H / 2 + 4)
+    .attr('width', 3).attr('height', CARD_H - 8).attr('rx', 1.5);
+
+  sessionNodes.append('rect')
+    .attr('class', 'node-icon-bg icon-bg-root')
+    .attr('x', -CARD_W / 2 + 4).attr('y', -CARD_H / 2 + 1)
+    .attr('width', ICON_BOX - 2).attr('height', CARD_H - 2).attr('rx', 3);
+
+  sessionNodes.append('text')
+    .attr('class', 'node-icon')
+    .attr('x', -CARD_W / 2 + 4 + (ICON_BOX - 2) / 2).attr('y', 1)
+    .text('◉');
+
+  const scx = -CARD_W / 2 + ICON_BOX + 10;
+  sessionNodes.append('text')
+    .attr('class', 'node-label').attr('x', scx).attr('y', -14)
+    .text('Session');
+  sessionNodes.append('text')
+    .attr('class', 'node-desc').attr('x', scx).attr('y', 0)
+    .text(d => d.data.description);
+  sessionNodes.append('text')
+    .attr('class', 'node-meta meta-root').attr('x', scx).attr('y', 14)
+    .text(d => d.data.started_at ? formatTime(d.data.started_at) : '');
+
   // ---- Agent nodes ----
-  const agentNodes = node.filter(d => d.data.kind !== 'tool');
+  const agentNodes = node.filter(d => d.data.kind !== 'tool' && d.data.kind !== 'session');
 
   agentNodes.append('rect')
     .attr('class', 'node-card-bg')
@@ -1115,11 +1160,13 @@ function renderTree() {
 
   toolNodes.append('text')
     .attr('class', 'node-tool-label')
+    .attr('fill', '#e2e8f0')
     .attr('x', -TOOL_CARD_W / 2 + 30).attr('y', -5)
     .text(d => d.data.agent_type);
 
   toolNodes.append('text')
     .attr('class', 'node-tool-meta')
+    .attr('fill', 'rgba(255,255,255,0.45)')
     .attr('x', -TOOL_CARD_W / 2 + 30).attr('y', 9)
     .text(d => {
       if (d.data.status === 'running') return '⟳';
